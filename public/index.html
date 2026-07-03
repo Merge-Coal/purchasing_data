@@ -2884,7 +2884,9 @@ async function adminCreateUser() {
   if (!username || !password) { msgEl.innerHTML = '<span style="color:var(--danger)">Username and password are required.</span>'; return; }
 
   const { ok, data, error } = await apiFetch('/api/users', {
-    method: 'POST', body: JSON.stringify({ username, full_name, password, role })
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, full_name, password, role })
   });
   if (!ok) { msgEl.innerHTML = `<span style="color:var(--danger)">${error}</span>`; return; }
 
