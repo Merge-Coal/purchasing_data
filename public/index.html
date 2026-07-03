@@ -1796,8 +1796,18 @@ function openCPOBulkModal() {
           oninput="updateCPOBulkSummary()"/>
       </td>
       <td>
-        <input type="text" id="cbulk-purpose-${it.pr_item_id}" placeholder="e.g. production maintenance"
-          class="field-input field-input-sm" style="width:190px"/>
+        <select id="cbulk-purpose-${it.pr_item_id}" class="field-input field-input-sm" style="width:200px">
+          <option value="">— Select purpose *</option>
+          <option value="Coal Wash 洗煤厂">Coal Wash 洗煤厂</option>
+          <option value="Dormitory 7 &amp; 8 宿舍">Dormitory 7 &amp; 8 宿舍</option>
+          <option value="Front Office 办公室">Front Office 办公室</option>
+          <option value="Changing Room 更衣室">Changing Room 更衣室</option>
+          <option value="Gas Drainage 抽瓦斯">Gas Drainage 抽瓦斯</option>
+          <option value="Workshop 维修车间">Workshop 维修车间</option>
+          <option value="Underground 井下">Underground 井下</option>
+          <option value="Trafo Room 变电所">Trafo Room 变电所</option>
+          <option value="Others 其他">Others 其他</option>
+        </select>
       </td>
       <td style="text-align:right;font-family:var(--mono);font-size:13px;color:var(--faint)" id="cbulk-linetotal-${it.pr_item_id}">—</td>
     </tr>`;
@@ -1860,7 +1870,11 @@ async function submitCPOBulk() {
       msgEl.innerHTML = '<div class="msg msg-error">All items need a valid unit price.</div>';
       return;
     }
-    const purpose = document.getElementById(`cbulk-purpose-${it.pr_item_id}`)?.value.trim() || '';
+    const purpose = document.getElementById(`cbulk-purpose-${it.pr_item_id}`)?.value || '';
+    if (!purpose) {
+      msgEl.innerHTML = '<div class="msg msg-error">All items need a purpose selected.</div>';
+      return;
+    }
     items.push({ pr_item_id: it.pr_item_id, unit_price, qty_ordered, purpose });
   }
 
