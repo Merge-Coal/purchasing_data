@@ -831,6 +831,37 @@ textarea.field-input{resize:vertical;min-height:70px}
       <!-- User Management -->
       <div style="margin-top:32px">
         <div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:12px">User Management</div>
+
+        <!-- Add User Form -->
+        <div class="surface" style="margin-bottom:16px;padding:16px 20px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:12px">Add User</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:11px;color:var(--faint);font-weight:600">USERNAME</label>
+              <input id="newUserUsername" class="input" placeholder="e.g. purchasing2" style="width:160px">
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:11px;color:var(--faint);font-weight:600">FULL NAME</label>
+              <input id="newUserFullName" class="input" placeholder="e.g. Purchasing Two" style="width:180px">
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:11px;color:var(--faint);font-weight:600">PASSWORD</label>
+              <input id="newUserPassword" class="input" type="password" placeholder="Min. 6 characters" style="width:180px">
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:11px;color:var(--faint);font-weight:600">ROLE</label>
+              <select id="newUserRole" class="input" style="width:140px">
+                <option value="requester">Requester</option>
+                <option value="purchasing" selected>Purchasing</option>
+                <option value="md">MD</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <button class="btn-primary" onclick="adminCreateUser()" style="height:36px;padding:0 20px">Add User</button>
+          </div>
+          <div id="addUserMsg" style="margin-top:8px;font-size:13px"></div>
+        </div>
+
         <div class="surface">
           <table>
             <thead class="tbl-head">
@@ -2841,6 +2872,28 @@ async function loadUserManagement() {
         <button class="btn-delete btn-sm" onclick="adminDeleteUser(${u.id}, '${escHtml(u.username)}')">Delete</button>
       </td>
     </tr>`).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:30px">No users.</td></tr>`;
+}
+
+async function adminCreateUser() {
+  const username  = document.getElementById('newUserUsername').value.trim();
+  const full_name = document.getElementById('newUserFullName').value.trim();
+  const password  = document.getElementById('newUserPassword').value;
+  const role      = document.getElementById('newUserRole').value;
+  const msgEl     = document.getElementById('addUserMsg');
+
+  if (!username || !password) { msgEl.innerHTML = '<span style="color:var(--danger)">Username and password are required.</span>'; return; }
+
+  const { ok, data, error } = await apiFetch('/api/users', {
+    method: 'POST', body: JSON.stringify({ username, full_name, password, role })
+  });
+  if (!ok) { msgEl.innerHTML = `<span style="color:var(--danger)">${error}</span>`; return; }
+
+  msgEl.innerHTML = `<span style="color:var(--success)">User "${data.username}" created.</span>`;
+  document.getElementById('newUserUsername').value = '';
+  document.getElementById('newUserFullName').value = '';
+  document.getElementById('newUserPassword').value = '';
+  document.getElementById('newUserRole').value = 'purchasing';
+  loadUserManagement();
 }
 
 async function adminDeleteUser(user_id, username) {

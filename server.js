@@ -1164,6 +1164,34 @@ app.get('/api/users', requireRole('admin'), async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/api/users', requireRole('admin'), async (req, res) => {
+  try {
+    const { username, password, role, full_name } = req.body;
+    if (!username || !password || !role) return res.status(400).json({ error: 'username, password and role are required' });
+    if (!['requester','purchasing','md','admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const existing = await ch.query(
+      `SELECT username FROM users FINAL WHERE company_id = {cid:String} AND username = {u:String} AND is_deleted = 0 LIMIT 1`,
+      { cid: ch.COMPANY_ID, u: username }
+    );
+    if (existing.length) return res.status(409).json({ error: 'Username already taken' });
+
+    const maxId = await ch.query(`SELECT max(legacy_user_id) AS m FROM users FINAL WHERE is_deleted = 0`);
+    const legacy_user_id = (Number(maxId[0]?.m) || 0) + 1;
+    const password_hash = bcrypt.hashSync(password, 10);
+    const now = ch.nowTs(); const ver = Number(ch.version());
+
+    await ch.insert('users', [{
+      user_id: ch.newUUID(), legacy_user_id, company_id: ch.COMPANY_ID,
+      username, password_hash, role, full_name: full_name || '',
+      email: '', department_id: '', status: 'active',
+      version: ver, is_deleted: 0, created_at: now, updated_at: now,
+    }]);
+    res.json({ ok: true, id: legacy_user_id, username, role });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
   try {
     if (String(req.session.user.id) === String(req.params.id))
