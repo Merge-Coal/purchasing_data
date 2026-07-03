@@ -507,6 +507,7 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
     vendor_name         String          DEFAULT '',
     status              LowCardinality(String) DEFAULT 'open',
     notes               String          DEFAULT '',
+    purpose             String          DEFAULT '',
     version             UInt64          DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
     is_deleted          UInt8           DEFAULT 0,
     created_at          DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
@@ -819,3 +820,7 @@ CREATE TABLE IF NOT EXISTS comments (
 ) ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (company_id, entity_type, entity_id, comment_id);
+
+-- ── Migrations ────────────────────────────────────────────────────────────────
+-- Run these on existing deployments to add columns added after initial schema
+ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS purpose String DEFAULT '';

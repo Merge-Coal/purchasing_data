@@ -916,6 +916,7 @@ textarea.field-input{resize:vertical;min-height:70px}
           <tr>
             <th>Item</th><th>PR</th><th>Dept</th><th>Qty</th><th>UOM</th>
             <th style="width:150px">Unit Price (Rp) *</th>
+            <th style="width:200px">Purpose</th>
             <th style="width:140px;text-align:right">Line Total</th>
           </tr>
         </thead>
@@ -930,6 +931,17 @@ textarea.field-input{resize:vertical;min-height:70px}
         <div class="summary-row">
           <span>Subtotal</span>
           <span class="serif-num" id="cpoBulkSubtotal">Rp 0</span>
+        </div>
+        <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <span style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)">Additional Charges</span>
+            <button type="button" onclick="addCPOCharge()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--accent);cursor:pointer">+ Add</button>
+          </div>
+          <div id="cpoChargesList" style="display:flex;flex-direction:column;gap:6px"></div>
+          <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:13px">
+            <span style="color:var(--faint)">Total charges</span>
+            <span class="serif-num" id="cpoBulkChargesAmount" style="color:var(--faint);font-size:13px">—</span>
+          </div>
         </div>
         <div class="summary-row" style="padding:10px 0">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
@@ -1695,6 +1707,56 @@ function updateCreatePOSummary() {
   document.getElementById('createPOSelectedCount').textContent = createPOSelected.size;
 }
 
+// ── Additional charges (freight/packing/insurance/etc) on PO ────────────────────
+const CPO_CHARGE_TYPES = [
+  { value: 'freight',   label: 'Freight / Shipping' },
+  { value: 'packing',   label: 'Packing' },
+  { value: 'insurance', label: 'Insurance' },
+  { value: 'handling',  label: 'Handling' },
+  { value: 'other',     label: 'Other' },
+];
+let cpoCharges = []; // [{ id, charge_type, description, amount }]
+let _cpoChargeSeq = 0;
+
+function addCPOCharge() {
+  cpoCharges.push({ id: ++_cpoChargeSeq, charge_type: 'freight', description: '', amount: '' });
+  renderCPOCharges();
+}
+function removeCPOCharge(id) {
+  cpoCharges = cpoCharges.filter(c => c.id !== id);
+  renderCPOCharges();
+  updateCPOBulkSummary();
+}
+function updateCPOChargeField(id, field, value) {
+  const c = cpoCharges.find(c => c.id === id);
+  if (!c) return;
+  c[field] = value;
+  updateCPOBulkSummary();
+}
+function renderCPOCharges() {
+  const wrap = document.getElementById('cpoChargesList');
+  if (!wrap) return;
+  if (!cpoCharges.length) {
+    wrap.innerHTML = '<div style="font-size:12px;color:var(--faint)">No additional charges.</div>';
+    return;
+  }
+  const opts = t => CPO_CHARGE_TYPES.map(o =>
+    `<option value="${o.value}"${o.value === t ? ' selected' : ''}>${o.label}</option>`).join('');
+  wrap.innerHTML = cpoCharges.map(c => `
+    <div style="display:flex;gap:6px;align-items:center">
+      <select onchange="updateCPOChargeField(${c.id},'charge_type',this.value)"
+        class="field-input field-input-sm" style="width:96px;font-size:12px">${opts(c.charge_type)}</select>
+      <input type="text" value="${escHtml(c.description || '')}" placeholder="Note"
+        oninput="updateCPOChargeField(${c.id},'description',this.value)"
+        class="field-input field-input-sm" style="flex:1;min-width:0;font-size:12px"/>
+      <input type="number" min="0" step="any" value="${c.amount}" placeholder="0"
+        oninput="updateCPOChargeField(${c.id},'amount',this.value)"
+        class="field-input field-input-sm" style="width:100px;font-size:12px"/>
+      <button type="button" onclick="removeCPOCharge(${c.id})" title="Remove"
+        style="background:none;border:none;color:var(--faint);cursor:pointer;font-size:16px;line-height:1">×</button>
+    </div>`).join('');
+}
+
 function openCPOBulkModal() {
   const msgEl = document.getElementById('createPOMsg');
   if (!createPOSelected.size) {
@@ -1712,6 +1774,8 @@ function openCPOBulkModal() {
     const cb = document.getElementById(`cpoBulkPPH_${id}`);
     if (cb) cb.checked = false;
   });
+  cpoCharges = [];
+  renderCPOCharges();
   // Render selected items into modal table
   const body = document.getElementById('cpoBulkItemsBody');
   const selectedItems = createPOItems.filter(it => createPOSelected.has(String(it.pr_item_id)));
@@ -1730,6 +1794,10 @@ function openCPOBulkModal() {
         <input type="number" id="cbulk-price-${it.pr_item_id}" min="0" step="any" placeholder="0.00"
           class="field-input field-input-sm" style="width:140px"
           oninput="updateCPOBulkSummary()"/>
+      </td>
+      <td>
+        <input type="text" id="cbulk-purpose-${it.pr_item_id}" placeholder="e.g. production maintenance"
+          class="field-input field-input-sm" style="width:190px"/>
       </td>
       <td style="text-align:right;font-family:var(--mono);font-size:13px;color:var(--faint)" id="cbulk-linetotal-${it.pr_item_id}">—</td>
     </tr>`;
@@ -1756,10 +1824,12 @@ function updateCPOBulkSummary() {
       el.style.color = lineTotal > 0 ? 'var(--text)' : 'var(--faint)';
     }
   });
+  const chargesTotal = cpoCharges.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
   const PPH_RATES = { pph23: 0.02, pph15: 0.012, pph22_solar: 0.003, pph22_impor: 0.025 };
   const PPH_LABELS = { pph23:'2%', pph15:'1,2%', pph22_solar:'0,3%', pph22_impor:'2,5%' };
   const includeVAT = document.getElementById('cpoBulkVAT')?.checked || false;
-  const vatAmount  = includeVAT ? subtotal * 0.11 : 0;
+  const vatBase    = subtotal + chargesTotal;
+  const vatAmount  = includeVAT ? vatBase * 0.11 : 0;
   let pphAmount = 0;
   Object.entries(PPH_RATES).forEach(([id, rate]) => {
     const cb  = document.getElementById(`cpoBulkPPH_${id}`);
@@ -1768,11 +1838,12 @@ function updateCPOBulkSummary() {
     const amtEl = document.getElementById(`cpoBulkPPHAmt_${id}`);
     if (amtEl) amtEl.textContent = cb?.checked ? `− ${fmtMoney(amt)} (${PPH_LABELS[id]})` : `— (${PPH_LABELS[id]})`;
   });
-  const total = subtotal + vatAmount - pphAmount;
-  document.getElementById('cpoBulkSubtotal').textContent  = fmtMoney(subtotal);
-  document.getElementById('cpoBulkVATAmount').textContent = includeVAT ? `+ ${fmtMoney(vatAmount)}` : '—';
-  document.getElementById('cpoBulkPPHAmount').textContent = pphAmount > 0 ? `− ${fmtMoney(pphAmount)}` : '—';
-  document.getElementById('cpoBulkTotal').textContent     = fmtMoney(total);
+  const total = subtotal + chargesTotal + vatAmount - pphAmount;
+  document.getElementById('cpoBulkSubtotal').textContent      = fmtMoney(subtotal);
+  document.getElementById('cpoBulkChargesAmount').textContent = chargesTotal > 0 ? `+ ${fmtMoney(chargesTotal)}` : '—';
+  document.getElementById('cpoBulkVATAmount').textContent     = includeVAT ? `+ ${fmtMoney(vatAmount)}` : '—';
+  document.getElementById('cpoBulkPPHAmount').textContent     = pphAmount > 0 ? `− ${fmtMoney(pphAmount)}` : '—';
+  document.getElementById('cpoBulkTotal').textContent         = fmtMoney(total);
 }
 
 async function submitCPOBulk() {
@@ -1789,16 +1860,24 @@ async function submitCPOBulk() {
       msgEl.innerHTML = '<div class="msg msg-error">All items need a valid unit price.</div>';
       return;
     }
-    items.push({ pr_item_id: it.pr_item_id, unit_price, qty_ordered });
+    const purpose = document.getElementById(`cbulk-purpose-${it.pr_item_id}`)?.value.trim() || '';
+    items.push({ pr_item_id: it.pr_item_id, unit_price, qty_ordered, purpose });
   }
 
   const include_vat = document.getElementById('cpoBulkVAT')?.checked || false;
   const pph_types   = ['pph23','pph15','pph22_solar','pph22_impor']
     .filter(id => document.getElementById(`cpoBulkPPH_${id}`)?.checked);
 
+  const charges = [];
+  for (const c of cpoCharges) {
+    const amount = parseFloat(c.amount);
+    if (isNaN(amount) || amount <= 0) continue; // skip blank/zero rows
+    charges.push({ charge_type: c.charge_type, description: (c.description || '').trim(), amount });
+  }
+
   const { ok, data, error } = await apiFetch('/api/po', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vendor_name, items, include_vat, pph_type: pph_types[0] || null, pph_types })
+    body: JSON.stringify({ vendor_name, items, include_vat, pph_type: pph_types[0] || null, pph_types, charges })
   });
   if (!ok) { msgEl.innerHTML = `<div class="msg msg-error">${error}</div>`; return; }
 
@@ -1883,6 +1962,36 @@ async function loadPOList() {
   renderPOTable();
 }
 
+const CPO_CHARGE_LABELS = {
+  freight: 'Freight / Shipping', packing: 'Packing', insurance: 'Insurance',
+  handling: 'Handling', other: 'Other',
+};
+// Builds a read-only summary block (subtotal, charges, VAT, PPH, total) from a PO object.
+function renderPOSummaryBlock(po) {
+  const subtotal = parseFloat(po.subtotal_amount) || 0;
+  const charges  = po.charges || [];
+  const vat      = parseFloat(po.tax_amount) || 0;
+  const pph       = parseFloat(po.withholding_amount) || 0;
+  const total     = parseFloat(po.total_amount) || 0;
+  const row = (label, value, opts = {}) => `
+    <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;${opts.border ? 'border-top:1px solid var(--border);margin-top:4px;padding-top:8px;' : ''}">
+      <span style="color:${opts.strong ? 'var(--text)' : 'var(--dim)'};${opts.strong ? 'font-weight:600' : ''}">${label}</span>
+      <span class="serif-num" style="${opts.strong ? 'font-size:16px' : ''}">${value}</span>
+    </div>`;
+  const chargeRows = charges.map(c => row(
+    `${CPO_CHARGE_LABELS[c.charge_type] || c.charge_type}${c.description ? ` · ${escHtml(c.description)}` : ''}`,
+    `+ ${fmtMoney(parseFloat(c.amount) || 0)}`
+  )).join('');
+  return `
+    <div style="max-width:340px;margin-left:auto;margin-top:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg)">
+      ${row('Subtotal', fmtMoney(subtotal))}
+      ${chargeRows}
+      ${vat > 0 ? row('VAT 11%', `+ ${fmtMoney(vat)}`) : ''}
+      ${pph > 0 ? row('PPH withholding', `− ${fmtMoney(pph)}`) : ''}
+      ${row('Total amount', fmtMoney(total), { strong: true, border: true })}
+    </div>`;
+}
+
 async function togglePODetail(po_id) {
   const row    = document.getElementById(`po-detail-row-${po_id}`);
   const detail = document.getElementById(`po-detail-${po_id}`);
@@ -1903,6 +2012,7 @@ async function togglePODetail(po_id) {
       <td style="font-family:var(--serif);font-size:14px">${fmtMoney(it.unit_price)}</td>
       <td style="font-family:var(--serif);font-size:14px;font-weight:600">${fmtMoney(it.total_price)}</td>
       <td class="mono" style="font-size:12px;color:var(--dim)">${it.pr_number || '—'}</td>
+      <td style="font-size:12px;color:var(--accent)">${it.purpose ? escHtml(it.purpose) : '<span style="color:var(--faint)">—</span>'}</td>
     </tr>`).join('');
 
   detail.innerHTML = `
@@ -1910,11 +2020,12 @@ async function togglePODetail(po_id) {
     <table class="pr-expand-table">
       <thead>
         <tr>
-          <th>Item</th><th>Qty</th><th>Unit Price</th><th>Total</th><th>Source PR</th>
+          <th>Item</th><th>Qty</th><th>Unit Price</th><th>Total</th><th>Source PR</th><th>Purpose</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    ${renderPOSummaryBlock(po)}`;
 }
 
 // ── PO Approval (MD view) ──────────────────────────────────────────────────────
@@ -1944,6 +2055,7 @@ async function loadMDPOApprovals() {
         <td style="font-family:var(--mono);font-size:13px;padding:8px 10px;white-space:nowrap">${fmtMoney(it.unit_price)}</td>
         <td style="font-family:var(--mono);font-size:13px;padding:8px 10px;text-align:right;white-space:nowrap;font-weight:600">${fmtMoney(it.total_price)}</td>
         <td style="font-size:11px;color:var(--faint);padding:8px 10px;font-family:var(--mono)">${escHtml(it.pr_number || '—')}</td>
+        <td style="font-size:12px;padding:8px 10px;color:var(--accent)">${it.purpose ? escHtml(it.purpose) : '<span style="color:var(--faint)">—</span>'}</td>
       </tr>`).join('');
     const po_id = po.po_id ?? po.legacy_po_id;
     return `
@@ -1966,10 +2078,12 @@ async function loadMDPOApprovals() {
             <th style="text-align:left;padding:6px 10px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)">Unit Price</th>
             <th style="text-align:right;padding:6px 10px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)">Line Total</th>
             <th style="text-align:left;padding:6px 10px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)">Source PR</th>
+            <th style="text-align:left;padding:6px 10px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)">Purpose</th>
           </tr>
         </thead>
         <tbody>${lineRows}</tbody>
       </table>
+      ${renderPOSummaryBlock(po)}
       <div id="po-reject-form-${po_id}" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
         <label class="field-label">Rejection Note *</label>
         <textarea id="po-reject-note-${po_id}" class="field-input" rows="2" placeholder="Reason for rejection…" style="margin-bottom:8px"></textarea>

@@ -14,6 +14,22 @@ const PORT    = 3000;
 const EXPORTS = path.join(__dirname, 'exports');
 if (!fs.existsSync(EXPORTS)) fs.mkdirSync(EXPORTS, { recursive: true });
 
+// ── GL account codes (hardcoded, per app convention — no config UI) ─────────────
+const GL_ACCOUNTS = {
+  inventory_expense: '5000', // goods / line items
+  accounts_payable:  '2100',
+  vat_input:         '1150', // PPN Masukan
+  pph_payable:       '2110',
+};
+// Additional-charge types → GL account code + display label
+const CHARGE_ACCOUNTS = {
+  freight:   { code: '5100', label: 'Freight / Shipping' },
+  packing:   { code: '5110', label: 'Packing' },
+  insurance: { code: '5120', label: 'Insurance' },
+  handling:  { code: '5130', label: 'Handling' },
+  other:     { code: '5190', label: 'Other Charges' },
+};
+
 // ── Fuse.js ───────────────────────────────────────────────────────────────────
 let fuse;
 async function rebuildFuse() {
@@ -558,11 +574,20 @@ app.get('/api/pr-items/approved', requireRole('purchasing', 'admin'), async (req
 app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
   try {
     const PPH_RATES = { pph23: 0.02, pph15: 0.012, pph22_solar: 0.003, pph22_impor: 0.025 };
-    const { vendor_name, items, include_vat = false, pph_type = null } = req.body;
+    const { vendor_name, items, include_vat = false, pph_type = null, charges = [] } = req.body;
     if (!vendor_name || !items?.length)
       return res.status(400).json({ error: 'vendor_name and items array required' });
     if (pph_type && !PPH_RATES[pph_type])
       return res.status(400).json({ error: `Unknown pph_type: ${pph_type}` });
+    if (!Array.isArray(charges))
+      return res.status(400).json({ error: 'charges must be an array' });
+    for (const c of charges) {
+      if (!CHARGE_ACCOUNTS[c.charge_type])
+        return res.status(400).json({ error: `Unknown charge_type: ${c.charge_type}` });
+      const amt = Number(c.amount);
+      if (!Number.isFinite(amt) || amt < 0)
+        return res.status(400).json({ error: 'Each charge needs a non-negative amount' });
+    }
 
     for (const it of items) {
       if (!it.pr_item_id || it.unit_price == null || it.qty_ordered == null)
@@ -575,11 +600,13 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
       if (r[0].status !== 'approved') return res.status(400).json({ error: `Item ${it.pr_item_id} is not approved` });
     }
 
-    const subtotal     = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
-    const vat_amount   = include_vat ? subtotal * 0.11 : 0;
-    const pph_rate     = pph_type ? PPH_RATES[pph_type] : 0;
-    const pph_amount   = subtotal * pph_rate;
-    const total_amount = subtotal + vat_amount - pph_amount;
+    const subtotal      = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
+    const charges_total = charges.reduce((s, c) => s + Number(c.amount), 0);
+    const vat_base      = subtotal + charges_total;
+    const vat_amount    = include_vat ? vat_base * 0.11 : 0;
+    const pph_rate      = pph_type ? PPH_RATES[pph_type] : 0;
+    const pph_amount    = subtotal * pph_rate;
+    const total_amount  = subtotal + charges_total + vat_amount - pph_amount;
 
     const po_number    = await nextPoNumber();
     const po_uuid      = ch.newUUID();
@@ -598,6 +625,7 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
       po_date: today(), expected_delivery_date: null,
       currency: 'IDR', exchange_rate: 1, payment_term_id: '',
       status: 'pending_approval', subtotal_amount: subtotal, discount_amount: 0,
+      charges_amount: charges_total,
       tax_amount: vat_amount, withholding_amount: pph_amount, total_amount,
       notes: '', search_text: `${po_number} ${vendor_name}`.toLowerCase(),
       created_by_user_id: req.session.user ? String(req.session.user.id) : '',
@@ -622,10 +650,24 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
         uom: prItem.uom, unit_price: parseFloat(it.unit_price), discount_amount: 0,
         tax_amount: 0, total_price: parseFloat(it.unit_price) * parseFloat(it.qty_ordered),
         gl_account_id: '', cost_center_id: '', vendor_name, status: 'open', notes: '',
+        purpose: String(it.purpose || ''),
         version: ver, is_deleted: 0, created_at: now, updated_at: now,
       });
     }
     await ch.insert('purchase_order_items', poItemRows);
+
+    if (charges.length) {
+      const chargeRows = charges.map((c, i) => ({
+        charge_id: ch.newUUID(), company_id: ch.COMPANY_ID, po_id: po_uuid,
+        line_no: i + 1, charge_type: c.charge_type,
+        description: (c.description || '').toString().slice(0, 500),
+        amount: Number(c.amount),
+        gl_account_code: CHARGE_ACCOUNTS[c.charge_type].code,
+        is_taxable: 1, version: ver, is_deleted: 0, created_at: now, updated_at: now,
+      }));
+      await ch.insert('purchase_order_charges', chargeRows);
+    }
+
     res.json({ po_id: legacy_po_id, po_number });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -743,7 +785,7 @@ app.get('/api/po/:id', requireAuth, async (req, res) => {
          poi.po_item_id, poi.legacy_po_item_id, poi.po_id, poi.line_no,
          poi.item_id, poi.pr_item_id, poi.ordered_qty, poi.received_qty,
          poi.uom AS uom, poi.unit_price, poi.total_price,
-         poi.status AS status, poi.notes AS notes,
+         poi.status AS status, poi.notes AS notes, poi.purpose AS purpose,
          i.name_en, i.name_cn, pr.pr_number
        FROM purchase_order_items poi FINAL
        JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
@@ -755,12 +797,21 @@ app.get('/api/po/:id', requireAuth, async (req, res) => {
 
     const prNums = [...new Set(lineItems.map(l => l.pr_number).filter(Boolean))].join(',');
 
+    const charges = await ch.query(
+      `SELECT line_no, charge_type, description, amount, gl_account_code, is_taxable
+       FROM purchase_order_charges FINAL
+       WHERE po_id = {poid:String} AND is_deleted = 0
+       ORDER BY line_no`,
+      { poid: po.po_id }
+    );
+
     res.json({
       ...po,
       po_id:       po.legacy_po_id,
       date_created: po.po_date,
       include_vat: parseFloat(po.tax_amount) > 0 ? 1 : 0,
       pr_numbers:  prNums,
+      charges,
       line_items:  lineItems.map(l => ({
         ...l, po_item_id: l.legacy_po_item_id, qty: l.ordered_qty,
       })),
@@ -782,7 +833,7 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
          poi.po_item_id, poi.legacy_po_item_id, poi.po_id, poi.line_no,
          poi.item_id, poi.pr_item_id, poi.ordered_qty, poi.received_qty,
          poi.uom AS uom, poi.unit_price, poi.total_price,
-         poi.status AS status, poi.notes AS notes,
+         poi.status AS status, poi.notes AS notes, poi.purpose AS purpose,
          i.name_en, i.name_cn, pr.pr_number, pr.department_id AS pr_department
        FROM purchase_order_items poi FINAL
        JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
@@ -794,25 +845,12 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
 
     const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-    const DEPT_CN = {
-      'Coal Extraction':'采煤队','Conveyor':'皮带队','Drainage':'抽放队',
-      'Electromechanical':'机电队','Excavation':'掘机队','Extraction':'抽采队',
-      'Installation':'安装队','Maintenance':'维修队','Material Preparation':'下料队',
-      'Mechanical Repair':'机修队','Monitoring':'监测队','Power Supply':'地面供电',
-      'Production':'生产队','Pump Room':'泵房','Reinforced Conveyor Belt':'强力皮带',
-      'Recovery':'回收队','Reserve':'预备队','Shotcrete':'喷浆队',
-      'Supporting':'辅助队','Track Rail':'轨道队','Tunnelling':'掘进队',
-      'Ventilation':'通风队','Welding':'电焊房',
-    };
     const UOM_CN_PRINT = {
       Bag:'袋',Bar:'根',Barrel:'桶',Bottle:'瓶',Box:'箱',Bundle:'捆',Carton:'纸箱',
       Coil:'卷',Cylinder:'气瓶',Item:'件',Kg:'千克',Litre:'升',M:'米',Pack:'包',
       Pair:'副',Pcs:'个',pcs:'个',Rod:'棒',Roll:'卷',Set:'套',Sheet:'张',
       Ton:'吨',Tube:'支',Unit:'台',
     };
-    const purposeDept = lineItems.find(it => it.pr_department)?.pr_department || '';
-    const purposeCN   = DEPT_CN[purposeDept] || '';
-
     const PPH_LABELS = {
       pph23: 'PPH 23 Jasa Badan (2%)', pph15: 'PPH 15 Jasa Tongkang (1,2%)',
       pph22_solar: 'PPH 22 Solar (0,3%)', pph22_impor: 'PPH 22 Impor (2,5%)',
@@ -829,20 +867,17 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
     const itemRows = lineItems.map(it => {
       const uomCN = UOM_CN_PRINT[it.uom];
       const uomDisplay = uomCN ? `${it.uom} / ${uomCN}` : it.uom;
+      const purposeLine = it.purpose ? `<br><span class="purpose">${esc(it.purpose)}</span>` : '';
       return `
       <tr>
         <td>${esc(it.item_id)}</td>
-        <td>${esc(it.name_en)}${it.name_cn ? '<br><span class="cn">' + esc(it.name_cn) + '</span>' : ''}</td>
+        <td>${esc(it.name_en)}${it.name_cn ? '<br><span class="cn">' + esc(it.name_cn) + '</span>' : ''}${purposeLine}</td>
         <td class="num">${parseFloat(it.ordered_qty).toLocaleString('id-ID')} ${esc(uomDisplay)}</td>
         <td class="num">${fmt(it.unit_price)}</td>
         <td class="num">0</td>
         <td class="num">${fmt(it.total_price)}</td>
       </tr>`;
     }).join('');
-
-    const purposeHtml = purposeDept
-      ? `<div class="to-box" style="margin-top:10px"><div class="label">Purpose / 采购目的</div><div class="vendor" style="font-size:10.5pt">${esc(purposeDept)}${purposeCN ? ' / ' + esc(purposeCN) : ''}</div></div>`
-      : '';
 
     const html = `<!DOCTYPE html>
 <html lang="id"><head><meta charset="UTF-8"><title>PO ${po.po_number}</title>
@@ -869,6 +904,7 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   table.items tbody tr:nth-child(even) { background:#EBF2FF; }
   table.items td { padding:5px 8px; border-bottom:1px solid #ddd; vertical-align:top; }
   .cn { font-size:8.5pt; color:#666; }
+  .purpose { font-size:8.5pt; color:#1565C0; font-style:italic; }
   .bottom { display:flex; gap:24px; justify-content:flex-end; }
   .notes-box { flex:1; font-size:9pt; color:#444; border-top:1px solid #ccc; padding-top:8px; }
   .notes-box .label { font-weight:700; font-size:9pt; color:#111; margin-bottom:4px; }
@@ -892,7 +928,6 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
 <div class="two-col">
   <div>
     <div class="to-box"><div class="label">To / 供应商</div><div class="vendor">${esc(po.vendor_name)}</div></div>
-    ${purposeHtml}
   </div>
   <div class="po-box"><div class="title">Purchase Order</div>
   <div class="po-meta">
@@ -958,15 +993,47 @@ app.get('/api/po/:id/export', requireRole('purchasing', 'admin'), async (req, re
       { poid: po.po_id }
     );
 
+    const charges = await ch.query(
+      `SELECT charge_type, description, amount, gl_account_code
+       FROM purchase_order_charges FINAL
+       WHERE po_id = {poid:String} AND is_deleted = 0
+       ORDER BY line_no`,
+      { poid: po.po_id }
+    );
+
     const itemNames   = lineItems.map(i => i.name_en).join(', ');
     const description = `${po.po_number} | ${po.vendor_name} | ${itemNames}`;
-    const totalAmount = parseFloat(po.total_amount);
     const dateStr     = po.po_date;
 
-    const glRows = [
-      { date: dateStr, account_code: 5000, account_name: 'Inventory/Expense', description, debit: totalAmount.toFixed(2), credit: '' },
-      { date: dateStr, account_code: 2100, account_name: 'Accounts Payable',  description, debit: '',                    credit: totalAmount.toFixed(2) },
-    ];
+    const subtotal    = parseFloat(po.subtotal_amount) || 0;
+    const vatAmount   = parseFloat(po.tax_amount) || 0;
+    const pphAmount   = parseFloat(po.withholding_amount) || 0;
+    const totalAmount = parseFloat(po.total_amount) || 0;
+
+    const dr = (code, name, amount) =>
+      ({ date: dateStr, account_code: code, account_name: name, description, debit: amount.toFixed(2), credit: '' });
+    const cr = (code, name, amount) =>
+      ({ date: dateStr, account_code: code, account_name: name, description, debit: '', credit: amount.toFixed(2) });
+
+    const glRows = [];
+    // Debits: goods, each charge, VAT input
+    glRows.push(dr(GL_ACCOUNTS.inventory_expense, 'Inventory/Expense', subtotal));
+    for (const c of charges) {
+      const acct = CHARGE_ACCOUNTS[c.charge_type] || CHARGE_ACCOUNTS.other;
+      const amt  = parseFloat(c.amount) || 0;
+      if (amt > 0) glRows.push(dr(c.gl_account_code || acct.code, acct.label, amt));
+    }
+    if (vatAmount > 0) glRows.push(dr(GL_ACCOUNTS.vat_input, 'VAT Input (PPN Masukan)', vatAmount));
+    // Credits: PPH payable, Accounts Payable (net balancing figure = total_amount)
+    if (pphAmount > 0) glRows.push(cr(GL_ACCOUNTS.pph_payable, 'PPH Withholding Payable', pphAmount));
+    glRows.push(cr(GL_ACCOUNTS.accounts_payable, 'Accounts Payable', totalAmount));
+
+    // Guard: debits must equal credits (rounded to cents)
+    const round2 = n => Math.round(n * 100) / 100;
+    const debitSum  = round2(glRows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0));
+    const creditSum = round2(glRows.reduce((s, r) => s + (parseFloat(r.credit) || 0), 0));
+    if (debitSum !== creditSum)
+      return res.status(500).json({ error: `GL journal unbalanced: debit ${debitSum} vs credit ${creditSum}` });
 
     const exportDate = today().replace(/-/g, '');
     const filename   = `GL_${po.po_number}_${exportDate}.csv`;
@@ -1299,6 +1366,27 @@ async function start() {
       updated_at            DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
     ) ENGINE = ReplacingMergeTree(version)
     ORDER BY (company_id, gl_export_id)
+  `);
+  await ch.execute(`
+    CREATE TABLE IF NOT EXISTS purchase_order_charges (
+      charge_id       UUID   DEFAULT generateUUIDv4(),
+      company_id      String,
+      po_id           String,
+      line_no         UInt16 DEFAULT 0,
+      charge_type     LowCardinality(String) DEFAULT 'other',
+      description     String DEFAULT '',
+      amount          Decimal(18, 2) DEFAULT 0,
+      gl_account_code String DEFAULT '',
+      is_taxable      UInt8  DEFAULT 1,
+      version         UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
+      is_deleted      UInt8  DEFAULT 0,
+      created_at      DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
+      updated_at      DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
+    ) ENGINE = ReplacingMergeTree(version)
+    ORDER BY (company_id, po_id, charge_id)
+  `);
+  await ch.execute(`
+    ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS charges_amount Decimal(18, 2) DEFAULT 0
   `);
   await rebuildFuse();
   console.log(`Fuse index built (${fuse ? 'ok' : 'empty'})`);
