@@ -1015,6 +1015,7 @@ app.get('/api/po/:id/export', requireRole('purchasing', 'admin'), async (req, re
     const cr = (code, name, amount) =>
       ({ date: dateStr, account_code: code, account_name: name, description, debit: '', credit: amount.toFixed(2) });
 
+    const round2 = n => Math.round(n * 100) / 100;
     const glRows = [];
     // Debits: goods, each charge, VAT input
     glRows.push(dr(GL_ACCOUNTS.inventory_expense, 'Inventory/Expense', subtotal));
@@ -1024,16 +1025,19 @@ app.get('/api/po/:id/export', requireRole('purchasing', 'admin'), async (req, re
       if (amt > 0) glRows.push(dr(c.gl_account_code || acct.code, acct.label, amt));
     }
     if (vatAmount > 0) glRows.push(dr(GL_ACCOUNTS.vat_input, 'VAT Input (PPN Masukan)', vatAmount));
-    // Credits: PPH payable, Accounts Payable (net balancing figure = total_amount)
+    // Credit: PPH payable, then Accounts Payable as the net balancing figure so the
+    // journal always balances against the (independently rounded) debit lines.
     if (pphAmount > 0) glRows.push(cr(GL_ACCOUNTS.pph_payable, 'PPH Withholding Payable', pphAmount));
-    glRows.push(cr(GL_ACCOUNTS.accounts_payable, 'Accounts Payable', totalAmount));
+    const debitSum   = round2(glRows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0));
+    const apCredit   = round2(debitSum - pphAmount);
+    glRows.push(cr(GL_ACCOUNTS.accounts_payable, 'Accounts Payable', apCredit));
 
-    // Guard: debits must equal credits (rounded to cents)
-    const round2 = n => Math.round(n * 100) / 100;
-    const debitSum  = round2(glRows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0));
+    // Sanity: AP should match the stored PO total within rounding; balance must be exact.
     const creditSum = round2(glRows.reduce((s, r) => s + (parseFloat(r.credit) || 0), 0));
     if (debitSum !== creditSum)
       return res.status(500).json({ error: `GL journal unbalanced: debit ${debitSum} vs credit ${creditSum}` });
+    if (Math.abs(apCredit - totalAmount) > 0.01)
+      console.warn(`GL export ${po.po_number}: AP ${apCredit} differs from stored total ${totalAmount}`);
 
     const exportDate = today().replace(/-/g, '');
     const filename   = `GL_${po.po_number}_${exportDate}.csv`;
