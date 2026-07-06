@@ -1705,6 +1705,7 @@ function renderCreatePOItems() {
       <td>
         <div style="font-weight:500">${it.name_en}</div>
         ${it.name_cn ? `<div style="font-size:11px;color:var(--faint)">${it.name_cn}</div>` : ''}
+        ${it.spec ? `<div style="font-size:11px;color:var(--faint);font-style:italic">${it.spec}</div>` : ''}
       </td>
       <td class="mono" style="font-size:12px">${it.pr_number}</td>
       <td class="text-dim">${it.requested_by}</td>
@@ -1816,6 +1817,7 @@ function openCPOBulkModal() {
       <td>
         <div style="font-weight:500">${escHtml(it.name_en)}</div>
         ${it.name_cn ? `<div style="font-size:11px;color:var(--faint)">${escHtml(it.name_cn)}</div>` : ''}
+        ${it.spec ? `<div style="font-size:11px;color:var(--faint);font-style:italic">${escHtml(it.spec)}</div>` : ''}
       </td>
       <td class="mono" style="font-size:12px">${escHtml(it.pr_number)}</td>
       <td class="text-dim">${escHtml(deptLabel(it.department))}</td>

@@ -550,7 +550,7 @@ app.get('/api/pr-items/approved', requireRole('purchasing', 'admin'), async (req
         pri.uom AS uom,
         pri.estimated_unit_price,
         pri.estimated_unit_price AS est_unit_price,
-        i.name_en, i.name_cn, i.category_name AS category,
+        i.name_en, i.name_cn, i.spec, i.category_name AS category,
         pr.pr_number, pr.requested_by_name AS requested_by, pr.pr_date AS date_requested,
         COALESCE(pri.department_id, pr.department_id) AS department,
         COALESCE(poi_agg.total_ordered, 0) AS qty_fulfilled
