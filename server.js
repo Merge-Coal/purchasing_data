@@ -298,10 +298,13 @@ app.post('/api/pr', requireRole('requester', 'purchasing', 'admin'), async (req,
       version: ver, is_deleted: 0, created_at: now, updated_at: now,
     }]);
 
+    // Allocate the base id once — calling nextLegacyId inside the loop returns
+    // the same value for every item (rows are only inserted after the loop)
+    const first_legacy_pri_id = await nextLegacyId('purchase_request_items', 'legacy_pr_item_id');
     const prItemRows = [];
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      const legacy_pri_id = await nextLegacyId('purchase_request_items', 'legacy_pr_item_id');
+      const legacy_pri_id = first_legacy_pri_id + i;
       prItemRows.push({
         pr_item_id: ch.newUUID(), legacy_pr_item_id: legacy_pri_id,
         company_id: ch.COMPANY_ID, pr_id: pr_uuid, line_no: i + 1,
@@ -632,6 +635,9 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
       version: ver, is_deleted: 0, created_at: now, updated_at: now,
     }]);
 
+    // Allocate the base id once — calling nextLegacyId inside the loop returns
+    // the same value for every item (rows are only inserted after the loop)
+    const first_legacy_poi_id = await nextLegacyId('purchase_order_items', 'legacy_po_item_id');
     const poItemRows = [];
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
@@ -640,7 +646,7 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
         { id: it.pr_item_id }
       );
       const prItem = prItemRows[0];
-      const legacy_poi_id = await nextLegacyId('purchase_order_items', 'legacy_po_item_id');
+      const legacy_poi_id = first_legacy_poi_id + i;
       poItemRows.push({
         po_item_id: ch.newUUID(), legacy_po_item_id: legacy_poi_id,
         company_id: ch.COMPANY_ID, po_id: po_uuid, line_no: i + 1,

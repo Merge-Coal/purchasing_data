@@ -2372,23 +2372,30 @@ async function bulkApprove() { await doBulkAction('approved'); }
 async function bulkReject()  { await doBulkAction('rejected'); }
 
 async function doBulkAction(action) {
-  const approved_by = currentUser.full_name || currentUser.username;
+  const approved_by = (currentUser && (currentUser.full_name || currentUser.username)) || 'Unknown';
   const items = Array.from(bulkSelected).map(s => JSON.parse(s));
+  const failures = [];
   await Promise.all(items.map(({ pr_item_id, pr_id }) => {
     const qty_approved = parseFloat(document.getElementById(`md-qty-${pr_item_id}`)?.value);
-    if (action === 'approved' && (isNaN(qty_approved) || qty_approved <= 0)) return Promise.resolve();
+    if (action === 'approved' && (isNaN(qty_approved) || qty_approved <= 0)) {
+      failures.push(`Item ${pr_item_id}: approved quantity must be greater than 0`);
+      return Promise.resolve();
+    }
     return apiFetch(`/api/pr/${pr_id}/items/${pr_item_id}/approve`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved_by, action, qty_approved })
-    }).then(({ ok, data }) => {
+    }).then(({ ok, data, error }) => {
       if (ok) {
         document.getElementById(`md-status-${pr_item_id}`).innerHTML = statusPill(data.status);
         document.getElementById(`md-action-${pr_item_id}`).innerHTML = '—';
         const qtyInput = document.getElementById(`md-qty-${pr_item_id}`);
         if (qtyInput) qtyInput.disabled = true;
+      } else {
+        failures.push(`Item ${pr_item_id}: ${error}`);
       }
     });
   }));
+  if (failures.length) alert(`Bulk ${action === 'approved' ? 'approve' : 'reject'} failed for ${failures.length} item(s):\n${failures.join('\n')}`);
   // Refresh summaries
   const prIds = [...new Set(items.map(i => i.pr_id))];
   await Promise.all(prIds.map(async pr_id => {
