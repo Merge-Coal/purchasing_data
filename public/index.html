@@ -2419,6 +2419,7 @@ function searchItems(q) {
       <div class="search-item" onclick="addLineItem(${JSON.stringify(it).replace(/"/g,'&quot;')})">
         <div class="si-name">${it.name_en}${it.name_cn ? ' — <span style="color:var(--faint);font-weight:400">'+it.name_cn+'</span>' : ''}</div>
         <div class="si-sub">${it.category||''} · ${uomLabel(it.uom||'')} · <span style="font-family:var(--mono)">${it.item_id}</span></div>
+        ${it.spec ? `<div class="si-sub" style="color:var(--faint);font-style:italic">${it.spec}</div>` : ''}
       </div>`).join('');
     dd.style.display = 'block';
   }, 200);
