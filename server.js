@@ -840,7 +840,7 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
          poi.item_id, poi.pr_item_id, poi.ordered_qty, poi.received_qty,
          poi.uom AS uom, poi.unit_price, poi.total_price,
          poi.status AS status, poi.notes AS notes, poi.purpose AS purpose,
-         i.name_en, i.name_cn, pr.pr_number, pr.department_id AS pr_department
+         i.name_en, i.name_cn, i.spec, pr.pr_number, pr.department_id AS pr_department
        FROM purchase_order_items poi FINAL
        JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
        LEFT JOIN purchase_request_items pri FINAL ON toString(pri.pr_item_id) = poi.pr_item_id AND pri.is_deleted = 0
@@ -873,11 +873,12 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
     const itemRows = lineItems.map(it => {
       const uomCN = UOM_CN_PRINT[it.uom];
       const uomDisplay = uomCN ? `${it.uom} / ${uomCN}` : it.uom;
+      const specLine    = it.spec    ? `<br><span class="spec">${esc(it.spec)}</span>`       : '';
       const purposeLine = it.purpose ? `<br><span class="purpose">${esc(it.purpose)}</span>` : '';
       return `
       <tr>
         <td>${esc(it.item_id)}</td>
-        <td>${esc(it.name_en)}${it.name_cn ? '<br><span class="cn">' + esc(it.name_cn) + '</span>' : ''}${purposeLine}</td>
+        <td>${esc(it.name_en)}${it.name_cn ? '<br><span class="cn">' + esc(it.name_cn) + '</span>' : ''}${specLine}${purposeLine}</td>
         <td class="num">${parseFloat(it.ordered_qty).toLocaleString('id-ID')} ${esc(uomDisplay)}</td>
         <td class="num">${fmt(it.unit_price)}</td>
         <td class="num">0</td>
@@ -910,6 +911,7 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   table.items tbody tr:nth-child(even) { background:#EBF2FF; }
   table.items td { padding:5px 8px; border-bottom:1px solid #ddd; vertical-align:top; }
   .cn { font-size:8.5pt; color:#666; }
+  .spec { font-size:8pt; color:#888; font-style:italic; }
   .purpose { font-size:8.5pt; color:#1565C0; font-style:italic; }
   .bottom { display:flex; gap:24px; justify-content:flex-end; }
   .notes-box { flex:1; font-size:9pt; color:#444; border-top:1px solid #ccc; padding-top:8px; }
