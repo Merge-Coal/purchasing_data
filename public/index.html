@@ -2432,7 +2432,7 @@ document.addEventListener('click', e => {
 function addLineItem(item) {
   document.getElementById('searchDropdown').style.display = 'none';
   document.getElementById('itemSearch').value = '';
-  lineItems.push({ item_id: item.item_id, name_en: item.name_en, name_cn: item.name_cn||'', uom: item.uom||'', qty: 1, notes: '', department: item.department||'' });
+  lineItems.push({ item_id: item.item_id, name_en: item.name_en, name_cn: item.name_cn||'', spec: item.spec||'', uom: item.uom||'', qty: 1, notes: '', department: item.department||'' });
   renderLineItems();
   renderSummary();
 }
@@ -2446,6 +2446,7 @@ function renderLineItems() {
       <td>
         <div style="font-size:13px;font-weight:500;color:var(--text)">${it.name_en}</div>
         ${it.name_cn?`<div style="font-size:11px;color:var(--faint)">${it.name_cn}</div>`:''}
+        ${it.spec?`<div style="font-size:11px;color:var(--faint);font-style:italic">${it.spec}</div>`:''}
       </td>
       <td><input type="number" min="0.01" step="any" value="${it.qty}" class="field-input field-input-sm" style="width:70px" onchange="lineItems[${i}].qty=+this.value;renderSummary()"/></td>
       <td><input type="text" value="${it.uom}" class="field-input field-input-sm" style="width:80px" list="uomList" onchange="lineItems[${i}].uom=this.value"/></td>
