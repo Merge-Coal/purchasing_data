@@ -9,8 +9,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Copy application source
-COPY server.js clickhouse.js ./
+# Copy application source and one-off admin scripts (run via docker exec)
+COPY server.js clickhouse.js create_user.js repair_duplicate_item_ids.js ./
 COPY public/ ./public/
 COPY db/schema.sql ./db/schema.sql
 
