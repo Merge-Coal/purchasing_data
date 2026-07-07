@@ -392,7 +392,7 @@ app.get('/api/pr/:id', requireAuth, async (req, res) => {
          pri.item_id, pri.requested_qty, pri.approved_qty,
          pri.uom AS uom, pri.estimated_unit_price, pri.estimated_total_price,
          pri.department_id, pri.status AS status, pri.notes AS notes,
-         i.name_en, i.name_cn, i.category_name AS category,
+         i.name_en, i.name_cn, i.spec, i.category_name AS category,
          COALESCE(poi_agg.total_ordered, 0) AS qty_fulfilled
        FROM purchase_request_items pri FINAL
        JOIN items i FINAL ON i.item_id = pri.item_id AND i.is_deleted = 0

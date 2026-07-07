@@ -1524,6 +1524,7 @@ function renderRequesterItemsTable(pr) {
       <td>
         <div style="font-size:13px;font-weight:500;color:var(--text)">${it.name_en}</div>
         ${it.name_cn ? `<div style="font-size:11px;color:var(--faint)">${it.name_cn}</div>` : ''}
+        ${it.spec ? `<div style="font-size:11px;color:var(--faint);font-style:italic">${it.spec}</div>` : ''}
       </td>
       <td style="font-size:13px">${it.qty_requested ?? it.qty}</td>
       <td style="font-size:13px">${it.qty_approved ?? '—'}</td>
