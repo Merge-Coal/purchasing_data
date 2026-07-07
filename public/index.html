@@ -442,6 +442,13 @@ textarea.field-input{resize:vertical;min-height:70px}
         <button class="filter-pill" data-filter="approved" onclick="setPRFilter('approved')">Approved</button>
         <button class="filter-pill" data-filter="rejected" onclick="setPRFilter('rejected')">Rejected</button>
         <div style="flex:1"></div>
+        <div style="display:flex;align-items:center;gap:5px">
+          <label style="font-size:11px;color:var(--faint);white-space:nowrap">From</label>
+          <input type="date" id="prDateFrom" class="field-input" style="width:130px;font-size:12px" onchange="onPRDateFilter()"/>
+          <label style="font-size:11px;color:var(--faint);white-space:nowrap">To</label>
+          <input type="date" id="prDateTo" class="field-input" style="width:130px;font-size:12px" onchange="onPRDateFilter()"/>
+          <button class="btn-outline" id="prDateClear" onclick="clearPRDateFilter()" style="display:none;font-size:11px;padding:4px 9px;line-height:1">✕ Clear</button>
+        </div>
         <div class="list-search-wrap">
           <span class="list-search-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></span>
           <input type="text" id="prSearch" class="field-input" placeholder="Search PR number, requester, or item…" oninput="onPRSearchInput(this.value)" autocomplete="off"/>
@@ -474,6 +481,14 @@ textarea.field-input{resize:vertical;min-height:70px}
 
     <!-- ── My Requests (Requester read-only tracker) ── -->
     <div id="page-myPRs" class="page">
+      <div style="display:flex;align-items:center;gap:5px;margin-bottom:18px">
+        <span style="font-size:12px;color:var(--faint);margin-right:4px">Filter by date:</span>
+        <label style="font-size:11px;color:var(--faint);white-space:nowrap">From</label>
+        <input type="date" id="myPRDateFrom" class="field-input" style="width:130px;font-size:12px" onchange="onMyPRDateFilter()"/>
+        <label style="font-size:11px;color:var(--faint);white-space:nowrap">To</label>
+        <input type="date" id="myPRDateTo" class="field-input" style="width:130px;font-size:12px" onchange="onMyPRDateFilter()"/>
+        <button class="btn-outline" id="myPRDateClear" onclick="clearMyPRDateFilter()" style="display:none;font-size:11px;padding:4px 9px;line-height:1">✕ Clear</button>
+      </div>
       <div id="myPRsMsg"></div>
       <div class="surface">
         <table>
@@ -733,6 +748,13 @@ textarea.field-input{resize:vertical;min-height:70px}
           <button class="sort-btn" id="poSort-date_created" onclick="togglePOSort('date_created')">Date ↕</button>
           <button class="sort-btn" id="poSort-vendor_name" onclick="togglePOSort('vendor_name')">Vendor ↕</button>
           <button class="sort-btn" id="poSort-status" onclick="togglePOSort('status')">Status ↕</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:5px">
+          <label style="font-size:11px;color:var(--faint);white-space:nowrap">From</label>
+          <input type="date" id="poDateFrom" class="field-input" style="width:130px;font-size:12px" onchange="onPODateFilter()"/>
+          <label style="font-size:11px;color:var(--faint);white-space:nowrap">To</label>
+          <input type="date" id="poDateTo" class="field-input" style="width:130px;font-size:12px" onchange="onPODateFilter()"/>
+          <button class="btn-outline" id="poDateClear" onclick="clearPODateFilter()" style="display:none;font-size:11px;padding:4px 9px;line-height:1">✕ Clear</button>
         </div>
         <div class="list-search-wrap">
           <span class="list-search-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></span>
@@ -1116,9 +1138,13 @@ function uomLabel(uom) {
 let prSortField = null, prSortDir = 1;
 let poSortField = null, poSortDir = 1;
 let allPOs = [];
+let allMyPRs = [];
 let currentPoItem = null;
 let currentRole = 'requester';
 let prFilter = 'all';
+let prDateFrom = '', prDateTo = '';
+let poDateFrom = '', poDateTo = '';
+let myPRDateFrom = '', myPRDateTo = '';
 let allPRs = [];
 let allMasterItems = [];
 let _itemMap = {}; // item_id → item object for edit modal lookup
@@ -1307,8 +1333,24 @@ function togglePRSort(field) {
   renderPRTable();
 }
 
+function onPRDateFilter() {
+  prDateFrom = document.getElementById('prDateFrom').value;
+  prDateTo   = document.getElementById('prDateTo').value;
+  document.getElementById('prDateClear').style.display = (prDateFrom || prDateTo) ? '' : 'none';
+  renderPRTable();
+}
+function clearPRDateFilter() {
+  prDateFrom = ''; prDateTo = '';
+  document.getElementById('prDateFrom').value = '';
+  document.getElementById('prDateTo').value = '';
+  document.getElementById('prDateClear').style.display = 'none';
+  renderPRTable();
+}
+
 function renderPRTable() {
-  const base = prFilter === 'all' ? allPRs : allPRs.filter(p => p.status === prFilter);
+  let base = prFilter === 'all' ? allPRs : allPRs.filter(p => p.status === prFilter);
+  if (prDateFrom) base = base.filter(p => p.date_requested >= prDateFrom);
+  if (prDateTo)   base = base.filter(p => p.date_requested <= prDateTo);
   // Sort: unfulfilled → partial → fulfilled → N/A, then newest first within group (default)
   // Override with user-selected sort field when set
   const fulfillOrder = { unfulfilled: 0, partial: 1, fulfilled: 2 };
@@ -1498,20 +1540,30 @@ function renderRequesterItemsTable(pr) {
 }
 
 // ── My Requests (Requester read-only tracker) ──────────────────────────────────
-async function loadMyPRs() {
+function onMyPRDateFilter() {
+  myPRDateFrom = document.getElementById('myPRDateFrom').value;
+  myPRDateTo   = document.getElementById('myPRDateTo').value;
+  document.getElementById('myPRDateClear').style.display = (myPRDateFrom || myPRDateTo) ? '' : 'none';
+  renderMyPRTable();
+}
+function clearMyPRDateFilter() {
+  myPRDateFrom = ''; myPRDateTo = '';
+  document.getElementById('myPRDateFrom').value = '';
+  document.getElementById('myPRDateTo').value = '';
+  document.getElementById('myPRDateClear').style.display = 'none';
+  renderMyPRTable();
+}
+
+function renderMyPRTable() {
   const body = document.getElementById('myPRsBody');
-  body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:30px;font-size:13px">Loading…</td></tr>`;
-  const { ok, data, error } = await apiFetch(`/api/pr?requester_id=${encodeURIComponent(String(currentUser.id))}`);
-  if (!ok) {
-    body.innerHTML = `<tr><td colspan="5"><div class="msg msg-error">${error}</div></td></tr>`;
+  let rows = allMyPRs.slice();
+  if (myPRDateFrom) rows = rows.filter(p => p.date_requested >= myPRDateFrom);
+  if (myPRDateTo)   rows = rows.filter(p => p.date_requested <= myPRDateTo);
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:40px;font-size:13px">${allMyPRs.length ? 'No requests match the selected date range.' : 'No requests submitted yet.'}</td></tr>`;
     return;
   }
-  document.getElementById('nav-badge-mypr').textContent = data.length || '—';
-  if (!data.length) {
-    body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:40px;font-size:13px">No requests submitted yet.</td></tr>`;
-    return;
-  }
-  body.innerHTML = data.map(pr => `
+  body.innerHTML = rows.map(pr => `
     <tr class="tbl-row" style="cursor:pointer" onclick="toggleMyPRItems(${pr.pr_id}, this)">
       <td class="mono">${pr.pr_number}</td>
       <td class="text-dim" style="font-family:var(--mono);font-size:12px">${pr.date_requested}</td>
@@ -1526,6 +1578,19 @@ async function loadMyPRs() {
         <div id="my-pr-items-detail-${pr.pr_id}"></div>
       </td>
     </tr>`).join('');
+}
+
+async function loadMyPRs() {
+  const body = document.getElementById('myPRsBody');
+  body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--faint);padding:30px;font-size:13px">Loading…</td></tr>`;
+  const { ok, data, error } = await apiFetch(`/api/pr?requester_id=${encodeURIComponent(String(currentUser.id))}`);
+  if (!ok) {
+    body.innerHTML = `<tr><td colspan="5"><div class="msg msg-error">${error}</div></td></tr>`;
+    return;
+  }
+  allMyPRs = data;
+  document.getElementById('nav-badge-mypr').textContent = data.length || '—';
+  renderMyPRTable();
 }
 
 async function toggleMyPRItems(pr_id) {
@@ -1949,10 +2014,31 @@ function togglePOSort(field) {
   renderPOTable();
 }
 
+function onPODateFilter() {
+  poDateFrom = document.getElementById('poDateFrom').value;
+  poDateTo   = document.getElementById('poDateTo').value;
+  document.getElementById('poDateClear').style.display = (poDateFrom || poDateTo) ? '' : 'none';
+  renderPOTable();
+}
+function clearPODateFilter() {
+  poDateFrom = ''; poDateTo = '';
+  document.getElementById('poDateFrom').value = '';
+  document.getElementById('poDateTo').value = '';
+  document.getElementById('poDateClear').style.display = 'none';
+  renderPOTable();
+}
+
 function renderPOTable() {
   const body = document.getElementById('poTableBody');
   if (!allPOs.length) return;
-  const sorted = allPOs.slice().sort((a, b) => {
+  let base = allPOs.slice();
+  if (poDateFrom) base = base.filter(p => p.date_created >= poDateFrom);
+  if (poDateTo)   base = base.filter(p => p.date_created <= poDateTo);
+  if (!base.length) {
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:40px;font-size:13px">No purchase orders match the selected date range.</td></tr>`;
+    return;
+  }
+  const sorted = base.sort((a, b) => {
     if (!poSortField) return 0;
     const va = String(a[poSortField] || ''), vb = String(b[poSortField] || '');
     if (va < vb) return -1 * poSortDir;
