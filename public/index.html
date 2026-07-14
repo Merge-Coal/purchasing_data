@@ -811,6 +811,19 @@ textarea.field-input{resize:vertical;min-height:70px}
             <input type="text" id="ani_name_cn" class="field-input"/>
           </div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+          <div>
+            <label class="field-label">Item Type</label>
+            <select id="ani_item_type" class="field-input" onchange="updateAdminCategoryOptions()">
+              <option value="expense">Product</option>
+              <option value="service">Service</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label">Spec</label>
+            <input type="text" id="ani_spec" class="field-input" placeholder="e.g. DN100, 18mm*35mm*10mm, Trafo 3×5000kVA"/>
+          </div>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:16px">
           <div>
             <label class="field-label">Category</label>
@@ -2907,6 +2920,8 @@ function adminCheckSimilar(q) {
 async function adminSaveNewItem() {
   const name_en  = document.getElementById('ani_name_en').value.trim();
   const name_cn  = document.getElementById('ani_name_cn').value.trim();
+  const item_type = document.getElementById('ani_item_type').value;
+  const spec     = document.getElementById('ani_spec').value.trim();
   const category = document.getElementById('ani_category').value;
   const uom      = document.getElementById('ani_uom').value.trim();
   const msgEl    = document.getElementById('adminItemMsg');
@@ -2917,7 +2932,7 @@ async function adminSaveNewItem() {
   }
   const { ok, data, error } = await apiFetch('/api/items', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name_en, name_cn, category, uom })
+    body: JSON.stringify({ name_en, name_cn, item_type, spec, category, uom })
   });
   if (!ok) { msgEl.innerHTML = `<div class="msg msg-error">${error}</div>`; return; }
   msgEl.innerHTML = `<div class="msg msg-success">Item <strong>${data.item_id}</strong> added successfully.</div>`;
@@ -3109,9 +3124,11 @@ function openEditItemModal(item_id) {
   document.getElementById('eit_item_id').value   = it.item_id;
   document.getElementById('eit_name_en').value   = it.name_en || '';
   document.getElementById('eit_name_cn').value   = it.name_cn || '';
+  document.getElementById('eit_item_type').value = it.item_type || 'expense';
   document.getElementById('eit_spec').value      = it.spec || '';
   document.getElementById('eit_category').value  = it.category_name || it.category || '';
   document.getElementById('eit_uom').value       = it.uom || '';
+  updateEditCategoryOptions();
   document.getElementById('editItemModal').classList.add('open');
 }
 
@@ -3119,10 +3136,53 @@ function closeEditItemModal() {
   document.getElementById('editItemModal').classList.remove('open');
 }
 
+function updateEditCategoryOptions() {
+  const itemType = document.getElementById('eit_item_type').value;
+  const categorySelect = document.getElementById('eit_category');
+  const productOptions = `
+    <option value="">— select —</option>
+    <option>Building/Civil</option><option>Consumables</option>
+    <option>Electrical</option><option>Fasteners</option>
+    <option>Food</option><option>Instrumentation</option>
+    <option>Lubricants &amp; Greases</option><option>Maintenance Parts</option>
+    <option>Mechanical Parts</option><option>Monthly Consumables</option>
+    <option>Occasional Items</option><option>Regular Consumables</option>
+    <option>Structural</option><option>Tools</option>
+    <option>Water Treatment</option>
+  `;
+  const serviceOptions = `
+    <option value="">— select —</option>
+    <option>Compliance</option><option>Maintenance</option><option>Transportation</option>
+  `;
+  categorySelect.innerHTML = itemType === 'service' ? serviceOptions : productOptions;
+}
+
+function updateAdminCategoryOptions() {
+  const itemType = document.getElementById('ani_item_type').value;
+  const categorySelect = document.getElementById('ani_category');
+  const productOptions = `
+    <option value="">— select —</option>
+    <option>Building/Civil</option><option>Consumables</option>
+    <option>Electrical</option><option>Fasteners</option>
+    <option>Food</option><option>Instrumentation</option>
+    <option>Lubricants &amp; Greases</option><option>Maintenance Parts</option>
+    <option>Mechanical Parts</option><option>Monthly Consumables</option>
+    <option>Occasional Items</option><option>Regular Consumables</option>
+    <option>Structural</option><option>Tools</option>
+    <option>Water Treatment</option>
+  `;
+  const serviceOptions = `
+    <option value="">— select —</option>
+    <option>Compliance</option><option>Maintenance</option><option>Transportation</option>
+  `;
+  categorySelect.innerHTML = itemType === 'service' ? serviceOptions : productOptions;
+}
+
 async function saveEditItem() {
   const item_id  = document.getElementById('eit_item_id').value;
   const name_en  = document.getElementById('eit_name_en').value.trim();
   const name_cn  = document.getElementById('eit_name_cn').value.trim();
+  const item_type = document.getElementById('eit_item_type').value;
   const spec     = document.getElementById('eit_spec').value.trim();
   const category = document.getElementById('eit_category').value;
   const uom      = document.getElementById('eit_uom').value.trim();
@@ -3130,7 +3190,7 @@ async function saveEditItem() {
   if (!name_en) { msgEl.innerHTML = '<div class="msg msg-error">English name is required.</div>'; return; }
   const { ok, error } = await apiFetch(`/api/items/${item_id}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name_en, name_cn, spec, category, uom })
+    body: JSON.stringify({ name_en, name_cn, item_type, spec, category, uom })
   });
   if (!ok) { msgEl.innerHTML = `<div class="msg msg-error">${error}</div>`; return; }
   closeEditItemModal();
@@ -3287,9 +3347,18 @@ function exportItemMasterXLS() {
         <input type="text" id="eit_name_cn" class="field-input"/>
       </div>
     </div>
-    <div style="margin-bottom:14px">
-      <label class="field-label">Spec</label>
-      <input type="text" id="eit_spec" class="field-input" placeholder="e.g. DN100, 18mm*35mm*10mm"/>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div>
+        <label class="field-label">Item Type</label>
+        <select id="eit_item_type" class="field-input" onchange="updateEditCategoryOptions()">
+          <option value="expense">Product</option>
+          <option value="service">Service</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">Spec</label>
+        <input type="text" id="eit_spec" class="field-input" placeholder="e.g. DN100, 18mm*35mm*10mm, Trafo 3×5000kVA"/>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px">
       <div>

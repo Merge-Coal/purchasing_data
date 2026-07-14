@@ -184,7 +184,7 @@ app.get('/api/items/departments', requireAuth, async (req, res) => {
 
 app.post('/api/items', requireRole('admin'), async (req, res) => {
   try {
-    const { name_en, name_cn, category, uom, department } = req.body;
+    const { name_en, name_cn, category, uom, department, item_type, spec } = req.body;
     if (!name_en) return res.status(400).json({ error: 'name_en required' });
     const last = await ch.query(
       `SELECT item_id FROM items FINAL WHERE is_deleted = 0 ORDER BY item_id DESC LIMIT 1`
@@ -199,8 +199,8 @@ app.post('/api/items', requireRole('admin'), async (req, res) => {
     await ch.insert('items', [{
       item_id, company_id: ch.COMPANY_ID, base_item_id: '', item_code: '',
       name_en: name_en || '', name_cn: name_cn || '', category_id: '',
-      category_name: category || '', spec: '', uom: uom || 'pcs',
-      department_id: department || '', item_type: 'expense',
+      category_name: category || '', spec: spec || '', uom: uom || 'pcs',
+      department_id: department || '', item_type: item_type || 'expense',
       default_gl_account_id: '', min_order_qty: 0, lead_time_days: 0, status: 'active',
       search_text: `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase(),
       version: ver, is_deleted: 0, created_at: now, updated_at: now,
@@ -217,13 +217,14 @@ app.put('/api/items/:id', requireRole('admin'), async (req, res) => {
       { id: req.params.id }
     );
     if (!rows.length) return res.status(404).json({ error: 'Item not found' });
-    const { name_en, name_cn, category, spec, uom } = req.body;
+    const { name_en, name_cn, category, spec, uom, item_type } = req.body;
     if (!name_en) return res.status(400).json({ error: 'name_en required' });
     const now = ch.nowTs(); const ver = Number(ch.version());
     await ch.insert('items', [{
       ...rows[0],
       name_en: name_en || '', name_cn: name_cn || '',
       category_name: category || '', spec: spec || '', uom: uom || rows[0].uom,
+      item_type: item_type || rows[0].item_type,
       search_text: `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase(),
       version: ver, updated_at: now,
     }]);
