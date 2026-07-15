@@ -1013,6 +1013,19 @@ textarea.field-input{resize:vertical;min-height:70px}
             <span class="serif-num" id="cpoBulkChargesAmount" style="color:var(--faint);font-size:13px">—</span>
           </div>
         </div>
+        <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;margin-bottom:6px">
+            <input type="checkbox" id="cpoBulkDiscountEnabled" onchange="updateCPOBulkSummary()" style="width:14px;height:14px;accent-color:var(--accent)">
+            Discount
+          </label>
+          <div id="cpoBulkDiscountRow" style="display:none;align-items:center;justify-content:space-between;gap:8px;margin-top:4px">
+            <div style="display:flex;align-items:center;gap:4px">
+              <input type="number" id="cpoBulkDiscountPct" min="0" max="100" step="0.01" oninput="updateCPOBulkSummary()" placeholder="0" style="width:64px;padding:3px 6px;border:1px solid var(--border);border-radius:5px;font-size:13px;text-align:right">
+              <span style="font-size:13px;color:var(--faint)">%</span>
+            </div>
+            <span class="serif-num" id="cpoBulkDiscountAmount" style="color:var(--faint);font-size:13px">—</span>
+          </div>
+        </div>
         <div class="summary-row" style="padding:10px 0">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
             <input type="checkbox" id="cpoBulkVAT" onchange="updateCPOBulkSummary()" style="width:14px;height:14px;accent-color:var(--accent)">
@@ -1951,21 +1964,28 @@ function updateCPOBulkSummary() {
     }
   });
   const chargesTotal = cpoCharges.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
+  const discountEnabled = document.getElementById('cpoBulkDiscountEnabled')?.checked || false;
+  const discountRowEl   = document.getElementById('cpoBulkDiscountRow');
+  if (discountRowEl) discountRowEl.style.display = discountEnabled ? 'flex' : 'none';
+  const discountPct    = discountEnabled ? (parseFloat(document.getElementById('cpoBulkDiscountPct')?.value) || 0) : 0;
+  const discountAmount = subtotal * discountPct / 100;
+  const discountedSubtotal = subtotal - discountAmount;
   const PPH_RATES = { pph23: 0.02, pph15: 0.012, pph22_solar: 0.003, pph22_impor: 0.025 };
   const PPH_LABELS = { pph23:'2%', pph15:'1,2%', pph22_solar:'0,3%', pph22_impor:'2,5%' };
   const includeVAT = document.getElementById('cpoBulkVAT')?.checked || false;
-  const vatBase    = subtotal + chargesTotal;
+  const vatBase    = discountedSubtotal + chargesTotal;
   const vatAmount  = includeVAT ? vatBase * 0.11 : 0;
   let pphAmount = 0;
   Object.entries(PPH_RATES).forEach(([id, rate]) => {
     const cb  = document.getElementById(`cpoBulkPPH_${id}`);
-    const amt = cb?.checked ? subtotal * rate : 0;
+    const amt = cb?.checked ? discountedSubtotal * rate : 0;
     pphAmount += amt;
     const amtEl = document.getElementById(`cpoBulkPPHAmt_${id}`);
     if (amtEl) amtEl.textContent = cb?.checked ? `− ${fmtMoney(amt)} (${PPH_LABELS[id]})` : `— (${PPH_LABELS[id]})`;
   });
-  const total = subtotal + chargesTotal + vatAmount - pphAmount;
+  const total = discountedSubtotal + chargesTotal + vatAmount - pphAmount;
   document.getElementById('cpoBulkSubtotal').textContent      = fmtMoney(subtotal);
+  document.getElementById('cpoBulkDiscountAmount').textContent = discountEnabled && discountAmount > 0 ? `− ${fmtMoney(discountAmount)}` : '—';
   document.getElementById('cpoBulkChargesAmount').textContent = chargesTotal > 0 ? `+ ${fmtMoney(chargesTotal)}` : '—';
   document.getElementById('cpoBulkVATAmount').textContent     = includeVAT ? `+ ${fmtMoney(vatAmount)}` : '—';
   document.getElementById('cpoBulkPPHAmount').textContent     = pphAmount > 0 ? `− ${fmtMoney(pphAmount)}` : '—';
@@ -1994,8 +2014,10 @@ async function submitCPOBulk() {
     items.push({ pr_item_id: it.pr_item_id, unit_price, qty_ordered, purpose });
   }
 
-  const include_vat = document.getElementById('cpoBulkVAT')?.checked || false;
-  const pph_types   = ['pph23','pph15','pph22_solar','pph22_impor']
+  const include_vat      = document.getElementById('cpoBulkVAT')?.checked || false;
+  const discountEnabled  = document.getElementById('cpoBulkDiscountEnabled')?.checked || false;
+  const discount_pct     = discountEnabled ? (parseFloat(document.getElementById('cpoBulkDiscountPct')?.value) || 0) : 0;
+  const pph_types        = ['pph23','pph15','pph22_solar','pph22_impor']
     .filter(id => document.getElementById(`cpoBulkPPH_${id}`)?.checked);
 
   const charges = [];
@@ -2007,7 +2029,7 @@ async function submitCPOBulk() {
 
   const { ok, data, error } = await apiFetch('/api/po', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vendor_name, items, include_vat, pph_type: pph_types[0] || null, pph_types, charges })
+    body: JSON.stringify({ vendor_name, items, include_vat, discount_pct, pph_type: pph_types[0] || null, pph_types, charges })
   });
   if (!ok) { msgEl.innerHTML = `<div class="msg msg-error">${error}</div>`; return; }
 
@@ -2119,9 +2141,10 @@ const CPO_CHARGE_LABELS = {
 };
 // Builds a read-only summary block (subtotal, charges, VAT, PPH, total) from a PO object.
 function renderPOSummaryBlock(po) {
-  const subtotal = parseFloat(po.subtotal_amount) || 0;
-  const charges  = po.charges || [];
-  const vat      = parseFloat(po.tax_amount) || 0;
+  const subtotal  = parseFloat(po.subtotal_amount) || 0;
+  const discount  = parseFloat(po.discount_amount) || 0;
+  const charges   = po.charges || [];
+  const vat       = parseFloat(po.tax_amount) || 0;
   const pph       = parseFloat(po.withholding_amount) || 0;
   const total     = parseFloat(po.total_amount) || 0;
   const row = (label, value, opts = {}) => `
@@ -2136,6 +2159,7 @@ function renderPOSummaryBlock(po) {
   return `
     <div style="max-width:340px;margin-left:auto;margin-top:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg)">
       ${row('Subtotal', fmtMoney(subtotal))}
+      ${discount > 0 ? row('Discount', `− ${fmtMoney(discount)}`) : ''}
       ${chargeRows}
       ${vat > 0 ? row('VAT 11%', `+ ${fmtMoney(vat)}`) : ''}
       ${pph > 0 ? row('PPH withholding', `− ${fmtMoney(pph)}`) : ''}

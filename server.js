@@ -578,7 +578,7 @@ app.get('/api/pr-items/approved', requireRole('purchasing', 'admin'), async (req
 app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
   try {
     const PPH_RATES = { pph23: 0.02, pph15: 0.012, pph22_solar: 0.003, pph22_impor: 0.025 };
-    const { vendor_name, items, include_vat = false, pph_type = null, charges = [] } = req.body;
+    const { vendor_name, items, include_vat = false, discount_pct = 0, pph_type = null, charges = [] } = req.body;
     if (!vendor_name || !items?.length)
       return res.status(400).json({ error: 'vendor_name and items array required' });
     if (pph_type && !PPH_RATES[pph_type])
@@ -604,13 +604,15 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
       if (r[0].status !== 'approved') return res.status(400).json({ error: `Item ${it.pr_item_id} is not approved` });
     }
 
-    const subtotal      = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
-    const charges_total = charges.reduce((s, c) => s + Number(c.amount), 0);
-    const vat_base      = subtotal + charges_total;
-    const vat_amount    = include_vat ? vat_base * 0.11 : 0;
-    const pph_rate      = pph_type ? PPH_RATES[pph_type] : 0;
-    const pph_amount    = subtotal * pph_rate;
-    const total_amount  = subtotal + charges_total + vat_amount - pph_amount;
+    const subtotal        = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
+    const discount_amount = subtotal * (Math.min(Math.max(parseFloat(discount_pct) || 0, 0), 100) / 100);
+    const discounted      = subtotal - discount_amount;
+    const charges_total   = charges.reduce((s, c) => s + Number(c.amount), 0);
+    const vat_base        = discounted + charges_total;
+    const vat_amount      = include_vat ? vat_base * 0.11 : 0;
+    const pph_rate        = pph_type ? PPH_RATES[pph_type] : 0;
+    const pph_amount      = discounted * pph_rate;
+    const total_amount    = discounted + charges_total + vat_amount - pph_amount;
 
     const po_number    = await nextPoNumber();
     const po_uuid      = ch.newUUID();
@@ -628,7 +630,7 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
       po_number, primary_pr_id, vendor_id: '', vendor_name,
       po_date: today(), expected_delivery_date: null,
       currency: 'IDR', exchange_rate: 1, payment_term_id: '',
-      status: 'pending_approval', subtotal_amount: subtotal, discount_amount: 0,
+      status: 'pending_approval', subtotal_amount: subtotal, discount_amount,
       charges_amount: charges_total,
       tax_amount: vat_amount, withholding_amount: pph_amount, total_amount,
       notes: '', search_text: `${po_number} ${vendor_name}`.toLowerCase(),
