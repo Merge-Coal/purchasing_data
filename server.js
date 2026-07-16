@@ -852,6 +852,14 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
       { poid: po.po_id }
     );
 
+    const charges = await ch.query(
+      `SELECT line_no, charge_type, description, amount, is_taxable
+       FROM purchase_order_charges FINAL
+       WHERE po_id = {poid:String} AND is_deleted = 0
+       ORDER BY line_no`,
+      { poid: po.po_id }
+    );
+
     const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
     const UOM_CN_PRINT = {
@@ -865,10 +873,11 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
       pph22_solar: 'PPH 22 Solar (0,3%)', pph22_impor: 'PPH 22 Impor (2,5%)',
     };
     const subtotal   = lineItems.reduce((s, i) => s + parseFloat(i.total_price), 0);
+    const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
     const vatAmount  = parseFloat(po.tax_amount) || 0;
     const pphAmount  = parseFloat(po.withholding_amount) || 0;
     const pphLabel   = PPH_LABELS[po.pph_type] || 'PPH';
-    const grandTotal = subtotal + vatAmount - pphAmount;
+    const grandTotal = subtotal + chargesTotal + vatAmount - pphAmount;
     const fmt = n => 'Rp ' + Math.round(n).toLocaleString('id-ID');
 
     const BLUE = '#1565C0';
@@ -958,9 +967,9 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   <div class="totals">
     <div class="total-row"><span>Sub Total</span><span>${fmt(subtotal)}</span></div>
     <div class="total-row"><span>Diskon</span><span>0</span></div>
+    ${charges.map(c => `<div class="total-row"><span>${esc(c.description)}</span><span>+ ${fmt(c.amount)}</span></div>`).join('')}
     ${vatAmount > 0 ? `<div class="total-row"><span>PPN (11%)</span><span>${fmt(vatAmount)}</span></div>` : ''}
     ${pphAmount > 0 ? `<div class="total-row"><span>${pphLabel}</span><span>− ${fmt(pphAmount)}</span></div>` : ''}
-    <div class="total-row"><span>Biaya Lain-lain</span><span>0</span></div>
     <div class="total-row grand"><span>Total</span><span>${fmt(grandTotal)}</span></div>
   </div>
 </div>
