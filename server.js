@@ -874,10 +874,11 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
     };
     const subtotal   = lineItems.reduce((s, i) => s + parseFloat(i.total_price), 0);
     const chargesTotal = charges.reduce((s, c) => s + Number(c.amount), 0);
+    const discountAmount = parseFloat(po.discount_amount) || 0;
     const vatAmount  = parseFloat(po.tax_amount) || 0;
     const pphAmount  = parseFloat(po.withholding_amount) || 0;
     const pphLabel   = PPH_LABELS[po.pph_type] || 'PPH';
-    const grandTotal = subtotal + chargesTotal + vatAmount - pphAmount;
+    const grandTotal = subtotal - discountAmount + chargesTotal + vatAmount - pphAmount;
     const fmt = n => 'Rp ' + Math.round(n).toLocaleString('id-ID');
 
     const BLUE = '#1565C0';
@@ -966,7 +967,7 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   <div class="notes-box"><div class="label">Notes / 备注</div><div>${esc(po.notes) || '—'}</div></div>
   <div class="totals">
     <div class="total-row"><span>Sub Total</span><span>${fmt(subtotal)}</span></div>
-    <div class="total-row"><span>Diskon</span><span>0</span></div>
+    ${discountAmount > 0 ? `<div class="total-row"><span>Diskon</span><span>− ${fmt(discountAmount)}</span></div>` : ''}
     ${charges.map(c => `<div class="total-row"><span>${esc(c.description)}</span><span>+ ${fmt(c.amount)}</span></div>`).join('')}
     ${vatAmount > 0 ? `<div class="total-row"><span>PPN (11%)</span><span>${fmt(vatAmount)}</span></div>` : ''}
     ${pphAmount > 0 ? `<div class="total-row"><span>${pphLabel}</span><span>− ${fmt(pphAmount)}</span></div>` : ''}
