@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS cost_centers (
 ) ENGINE = ReplacingMergeTree(version)
 ORDER BY (company_id, cost_center_id);
 
+CREATE TABLE IF NOT EXISTS purposes (
+    purpose_id           String,
+    company_id           String,
+    label                String,
+    sort_order           UInt16          DEFAULT 0,
+    status               LowCardinality(String) DEFAULT 'active',
+    version              UInt64          DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
+    is_deleted           UInt8           DEFAULT 0,
+    created_at           DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
+    updated_at           DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(version)
+ORDER BY (company_id, purpose_id);
+
 CREATE TABLE IF NOT EXISTS gl_accounts (
     gl_account_id       String,
     company_id          String,

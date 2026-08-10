@@ -257,6 +257,15 @@ app.get('/api/uom', requireAuth, async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/purposes', requireAuth, async (_req, res) => {
+  try {
+    const rows = await ch.query(
+      `SELECT purpose_id, label FROM purposes FINAL WHERE is_deleted = 0 AND status = 'active' ORDER BY sort_order`
+    );
+    res.json(rows.map(r => r.label));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/vendors/search', requireAuth, async (req, res) => {
   try {
     const q = (req.query.q || '').trim();

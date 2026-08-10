@@ -1927,17 +1927,7 @@ function openCPOBulkModal() {
       <td>
         <select id="cbulk-purpose-${it.pr_item_id}" class="field-input field-input-sm" style="width:200px">
           <option value="">— Select purpose *</option>
-          <option value="Coal Wash 洗煤厂">Coal Wash 洗煤厂</option>
-          <option value="Dormitory 7 &amp; 8 宿舍">Dormitory 7 &amp; 8 宿舍</option>
-          <option value="Front Office 办公室">Front Office 办公室</option>
-          <option value="Changing Room 更衣室">Changing Room 更衣室</option>
-          <option value="Gas Drainage 抽瓦斯">Gas Drainage 抽瓦斯</option>
-          <option value="Workshop 维修车间">Workshop 维修车间</option>
-          <option value="Underground 井下">Underground 井下</option>
-          <option value="Trafo Room 变电所">Trafo Room 变电所</option>
-          <option value="Water Treatment Plant 净化水厂">Water Treatment Plant 净化水厂</option>
-          <option value="Winch Station 绞车房">Winch Station 绞车房</option>
-          <option value="Others 其他">Others 其他</option>
+          ${purposeList.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('')}
         </select>
       </td>
       <td style="text-align:right;font-family:var(--mono);font-size:13px;color:var(--faint)" id="cbulk-linetotal-${it.pr_item_id}">—</td>
@@ -3058,6 +3048,12 @@ async function loadUOMList() {
   if (dl) dl.innerHTML = data.map(u => `<option value="${escHtml(u)}">`).join('');
 }
 
+let purposeList = [];
+async function loadPurposeList() {
+  const { ok, data } = await apiFetch('/api/purposes');
+  if (ok) purposeList = data;
+}
+
 // ── Utilities ──────────────────────────────────────────────────────────────────
 function fmtMoney(v) {
   if (v === null || v === undefined || v === '') return '—';
@@ -3117,6 +3113,7 @@ function initApp() {
   document.getElementById('topbar-role').textContent     = currentUser.role;
   loadDepartments();
   loadUOMList();
+  loadPurposeList();
   switchRole(currentUser.role);
   renderPipelinePreview();
   pollItemRequestBadge();
