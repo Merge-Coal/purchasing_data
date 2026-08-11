@@ -284,6 +284,34 @@ app.get('/api/vendors/search', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/api/vendors', requireRole('purchasing', 'admin'), async (req, res) => {
+  try {
+    const { vendor_name, category, contact_person, phone, mobile, email, address, city, npwp } = req.body;
+    if (!vendor_name) return res.status(400).json({ error: 'vendor_name required' });
+    const last = await ch.query(
+      `SELECT vendor_id FROM vendors FINAL WHERE is_deleted = 0 AND vendor_id LIKE 'V-%' ORDER BY vendor_id DESC LIMIT 1`
+    );
+    let nextNum = 1;
+    if (last.length) {
+      const m = last[0].vendor_id.match(/V-(\d+)/);
+      if (m) nextNum = parseInt(m[1], 10) + 1;
+    }
+    const vendor_id = `V-${String(nextNum).padStart(4, '0')}`;
+    const now = ch.nowTs(); const ver = Number(ch.version());
+    await ch.insert('vendors', [{
+      vendor_id, company_id: ch.COMPANY_ID, vendor_code: '', vendor_name,
+      category: category || 'General', status: 'active',
+      contact_person: contact_person || '', phone: phone || '', mobile: mobile || '',
+      email: email || '', address: address || '', city: city || '', country: 'ID',
+      npwp: npwp || '', payment_term_id: '', default_currency: 'IDR', tax_profile: '',
+      risk_rating: '', blocked_reason: '',
+      search_text: `${vendor_name} ${city || ''}`.toLowerCase(),
+      version: ver, is_deleted: 0, created_at: now, updated_at: now,
+    }]);
+    res.json({ vendor_id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Purchase Requests ─────────────────────────────────────────────────────────
 app.post('/api/pr', requireRole('requester', 'purchasing', 'admin'), async (req, res) => {
   try {
