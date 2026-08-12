@@ -1680,12 +1680,21 @@ function onVendorInput(val) {
 
 function renderVendorDropdown() {
   const dd = document.getElementById('vendorDropdown');
-  if (!_vendorResults.length) { dd.style.display = 'none'; return; }
+  const searchVal = document.getElementById('poVendorName').value.trim();
+  const addRow = `
+    <div class="vendor-option" onmousedown="openAddVendorModal()" style="color:var(--accent, #2563eb)">
+      <div class="vname">+ Add new vendor${searchVal ? ' "' + escHtml(searchVal) + '"' : ''}</div>
+    </div>`;
+  if (!_vendorResults.length) {
+    dd.innerHTML = addRow;
+    dd.style.display = 'block';
+    return;
+  }
   dd.innerHTML = _vendorResults.map((v, i) => `
     <div class="vendor-option" data-i="${i}" onmousedown="selectVendor(${i})">
       <div class="vname">${escHtml(v.name)}</div>
       <div class="vmeta">${v.vendor_id}${v.city ? ' · ' + escHtml(v.city) : ''}${v.email ? ' · ' + escHtml(v.email) : ''}</div>
-    </div>`).join('');
+    </div>`).join('') + addRow;
   dd.style.display = 'block';
 }
 
@@ -1706,6 +1715,46 @@ function closeVendorDropdown() {
     _vendorResults = [];
     _vendorCursor = -1;
   }, 100);
+}
+
+function openAddVendorModal() {
+  closeVendorDropdown();
+  document.getElementById('addVendorMsg').innerHTML = '';
+  document.getElementById('av_name').value  = document.getElementById('poVendorName').value.trim();
+  document.getElementById('av_city').value  = '';
+  document.getElementById('av_phone').value = '';
+  document.getElementById('av_email').value = '';
+  document.getElementById('av_npwp').value  = '';
+  document.getElementById('addVendorModal').classList.add('open');
+}
+
+function closeAddVendorModal() {
+  document.getElementById('addVendorModal').classList.remove('open');
+}
+
+async function saveNewVendor() {
+  const vendor_name = document.getElementById('av_name').value.trim();
+  const msg = document.getElementById('addVendorMsg');
+  if (!vendor_name) { msg.innerHTML = '<div class="msg msg-error">Vendor name is required.</div>'; return; }
+  const body = {
+    vendor_name,
+    city:  document.getElementById('av_city').value.trim(),
+    phone: document.getElementById('av_phone').value.trim(),
+    email: document.getElementById('av_email').value.trim(),
+    npwp:  document.getElementById('av_npwp').value.trim(),
+  };
+  const { ok, data, error } = await apiFetch('/api/vendors', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!ok) { msg.innerHTML = `<div class="msg msg-error">${escHtml(error)}</div>`; return; }
+  closeAddVendorModal();
+  _vendorSelected = { vendor_id: data.vendor_id, name: vendor_name, city: body.city, phone: body.phone, email: body.email };
+  document.getElementById('poVendorName').value = vendor_name;
+  const meta = document.getElementById('vendorMeta');
+  meta.textContent = [data.vendor_id, body.city, body.phone || body.email].filter(Boolean).join(' · ');
+  meta.style.display = 'block';
 }
 
 function onVendorKeydown(e) {
@@ -3406,6 +3455,44 @@ function exportItemMasterXLS() {
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn-primary" onclick="saveEditItem()">Save Changes</button>
       <button class="btn-outline" onclick="closeEditItemModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+<!-- ── Add Vendor Modal ── -->
+<div class="modal-overlay" id="addVendorModal">
+  <div class="modal" style="max-width:480px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div class="modal-title">Add New Vendor</div>
+      <button onclick="closeAddVendorModal()" style="background:none;border:none;cursor:pointer;color:var(--faint);font-size:22px;line-height:1;padding:0">×</button>
+    </div>
+    <div id="addVendorMsg"></div>
+    <div style="margin-bottom:14px">
+      <label class="field-label">Vendor Name *</label>
+      <input type="text" id="av_name" class="field-input"/>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div>
+        <label class="field-label">City</label>
+        <input type="text" id="av_city" class="field-input"/>
+      </div>
+      <div>
+        <label class="field-label">Phone</label>
+        <input type="text" id="av_phone" class="field-input"/>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px">
+      <div>
+        <label class="field-label">Email</label>
+        <input type="text" id="av_email" class="field-input"/>
+      </div>
+      <div>
+        <label class="field-label">NPWP</label>
+        <input type="text" id="av_npwp" class="field-input"/>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn-primary" onclick="saveNewVendor()">Add Vendor</button>
+      <button class="btn-outline" onclick="closeAddVendorModal()">Cancel</button>
     </div>
   </div>
 </div>
