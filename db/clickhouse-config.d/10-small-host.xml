@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <!--
   This ClickHouse shares a 2-core, 8GB VPS with four other projects. Stock
-  settings assume the server owns the machine: the thread pools are sized to
-  every core, and four system log tables are written and merged continuously
-  whether or not anyone is using the app. On 2026-09-28 this container was the
-  largest single CPU consumer on the box while `procurement_app` sat at 0%.
+  settings assume the server owns the machine: six system log tables are
+  written and merged continuously whether or not anyone is using the app. On
+  2026-09-28 this container was the largest single CPU consumer on the box at
+  61.8%, while `procurement_app` sat at 0%. Disabling them and truncating what
+  they had accumulated took it to 4.34% and freed 12 GB of disk.
 
   Mounted read-only at /etc/clickhouse-server/config.d/, so it overrides the
   stock config without editing it. Remove the file and restart to go back.
