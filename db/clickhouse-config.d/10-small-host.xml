@@ -10,12 +10,22 @@
   stock config without editing it. Remove the file and restart to go back.
 -->
 <clickhouse>
-    <!-- Written every second, forever, with no users connected. query_log and
-         part_log are left on: far lower volume and genuinely useful when
-         something goes wrong. -->
+    <!-- Written continuously whether or not anyone is connected. Measured on
+         2026-09-28, against 224 KiB of actual procurement data:
+           text_log                 5.69 GiB    156,894,087 rows
+           metric_log               1.73 GiB     12,112,319 rows
+           trace_log                1.60 GiB     93,062,810 rows
+           asynchronous_metric_log  1.16 GiB  2,384,631,927 rows
+           processors_profile_log     208 MiB      7,772,389 rows
+         text_log duplicates into SQL what already goes to the container log,
+         so nothing is lost by turning it off. query_log (199 MiB) and part_log
+         (397 KiB) stay: low volume, and the ones worth having when something
+         goes wrong. -->
+    <text_log remove="1"/>
     <metric_log remove="1"/>
-    <asynchronous_metric_log remove="1"/>
     <trace_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <processors_profile_log remove="1"/>
     <query_thread_log remove="1"/>
 
     <!-- Background merge/fetch threads. The default scales with core count and
