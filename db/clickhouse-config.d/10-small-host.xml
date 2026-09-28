@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!--
+  This ClickHouse shares a 2-core, 8GB VPS with four other projects. Stock
+  settings assume the server owns the machine: the thread pools are sized to
+  every core, and four system log tables are written and merged continuously
+  whether or not anyone is using the app. On 2026-09-28 this container was the
+  largest single CPU consumer on the box while `procurement_app` sat at 0%.
+
+  Mounted read-only at /etc/clickhouse-server/config.d/, so it overrides the
+  stock config without editing it. Remove the file and restart to go back.
+-->
+<clickhouse>
+    <!-- Written every second, forever, with no users connected. query_log and
+         part_log are left on: far lower volume and genuinely useful when
+         something goes wrong. -->
+    <metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <trace_log remove="remove"/>
+    <query_thread_log remove="remove"/>
+
+    <!-- Background merge/fetch threads. The default scales with core count and
+         keeps both cores busy merging parts the moment they appear. -->
+    <background_pool_size>2</background_pool_size>
+    <background_common_pool_size>2</background_common_pool_size>
+    <background_schedule_pool_size>2</background_schedule_pool_size>
+
+    <!-- Keep the remaining logs from growing without bound. -->
+    <query_log>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+    </query_log>
+</clickhouse>

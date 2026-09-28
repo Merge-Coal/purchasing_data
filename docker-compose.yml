@@ -16,9 +16,18 @@ services:
       - ./data:/app/data
       - ./exports:/app/exports
     ports:
+      # NOTE: INFRASTRUCTURE.md advertises the app directly on :3000 while
+      # OPERATIONS.md says port 80 via nginx. Until that is settled this stays
+      # public — closing it would take procurement offline if the docs are
+      # wrong. The app does have its own login.
       - "3000:3000"
     networks:
       - procurement_net
+    cpus: 0.5
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -35,9 +44,17 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./db/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      # Sizes ClickHouse for a shared 2-core box — see the comments in each.
+      - ./db/clickhouse-config.d/10-small-host.xml:/etc/clickhouse-server/config.d/10-small-host.xml:ro
+      - ./db/clickhouse-config.d/20-users.xml:/etc/clickhouse-server/users.d/20-users.xml:ro
     ports:
-      - "8123:8123"   # HTTP interface (used by Node.js client)
-      - "9000:9000"   # Native TCP interface
+      # Loopback only. `procurement_app` reaches ClickHouse over
+      # procurement_net as host `clickhouse`, so nothing here needs a public
+      # port — and Docker's port publishing bypasses ufw, which left these two
+      # open to the internet. For the migrate/import scripts from a laptop,
+      # tunnel instead:  ssh -L 8123:127.0.0.1:8123 root@<host>
+      - "127.0.0.1:8123:8123"   # HTTP interface
+      - "127.0.0.1:9000:9000"   # Native TCP interface
     ulimits:
       nofile:
         soft: 262144
@@ -50,6 +67,13 @@ services:
       start_period: 30s
     networks:
       - procurement_net
+    # The largest CPU consumer on the box on 2026-09-28, at 61.8% while the
+    # app it serves was idle. Half a core is ample for this dataset.
+    cpus: 0.5
+    mem_limit: 2g
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
 volumes:
   clickhouse_data:
