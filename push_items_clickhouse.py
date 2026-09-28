@@ -4,7 +4,7 @@ push_items_clickhouse.py — Push pre-exported items JSON into ClickHouse.
 Wipes the existing items table then inserts from items_for_clickhouse.json.
 
 Usage:
-  python3 push_items_clickhouse.py --host 76.13.19.246 --password 'Merge2026!CH'
+  python3 push_items_clickhouse.py --host 76.13.19.246 --password "$CLICKHOUSE_PASSWORD"
   python3 push_items_clickhouse.py --host localhost
 """
 

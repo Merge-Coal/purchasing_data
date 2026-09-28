@@ -6,7 +6,7 @@ Items are fuzzy-matched to the items table by English name + spec.
 
 Usage:
   python3 import_templates.py --dry-run
-  python3 import_templates.py --host 76.13.19.246 --password 'Merge2026!CH'
+  python3 import_templates.py --host 76.13.19.246 --password "$CLICKHOUSE_PASSWORD"
 """
 
 import sys, os, json, uuid, argparse

@@ -9,12 +9,19 @@
 const bcrypt = require('bcryptjs');
 const ch     = require('./clickhouse');
 
+// Never hard-code the password here: this repo is public, and a literal left
+// in a one-time script outlives the one time it was run.
 const NEW_USER = {
-  username:  'purchasing2',
-  password:  'Merge2026!CH',
-  role:      'purchasing',
-  full_name: 'Purchasing 2',
+  username:  process.env.NEW_USER_NAME     || 'purchasing2',
+  password:  process.env.NEW_USER_PASSWORD,
+  role:      process.env.NEW_USER_ROLE     || 'purchasing',
+  full_name: process.env.NEW_USER_FULLNAME || 'Purchasing 2',
 };
+
+if (!NEW_USER.password) {
+  console.error('Set NEW_USER_PASSWORD, e.g. NEW_USER_PASSWORD=... node create_user.js');
+  process.exit(1);
+}
 
 (async () => {
   // Check for duplicate
