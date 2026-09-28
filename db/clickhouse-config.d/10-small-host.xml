@@ -13,10 +13,10 @@
     <!-- Written every second, forever, with no users connected. query_log and
          part_log are left on: far lower volume and genuinely useful when
          something goes wrong. -->
-    <metric_log remove="remove"/>
-    <asynchronous_metric_log remove="remove"/>
-    <trace_log remove="remove"/>
-    <query_thread_log remove="remove"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <trace_log remove="1"/>
+    <query_thread_log remove="1"/>
 
     <!-- Background merge/fetch threads. The default scales with core count and
          keeps both cores busy merging parts the moment they appear. -->
