@@ -28,11 +28,14 @@
     <processors_profile_log remove="1"/>
     <query_thread_log remove="1"/>
 
-    <!-- Background merge/fetch threads. The default scales with core count and
-         keeps both cores busy merging parts the moment they appear. -->
-    <background_pool_size>2</background_pool_size>
-    <background_common_pool_size>2</background_common_pool_size>
-    <background_schedule_pool_size>2</background_schedule_pool_size>
+    <!-- No background_pool_size override here. Setting it to 2 failed the
+         server's own sanity check on startup (24.8.14): it must be at least
+         number_of_free_entries_in_pool_to_execute_mutation (20) divided by
+         background_merges_mutations_concurrency_ratio (2), or mutations can
+         never run. Lowering it properly means lowering the merge_tree
+         thresholds to match, and there is no reason to: `cpus: 0.5` in the
+         compose file already caps what this container can use, whatever the
+         pool size. The log tables above are what was actually costing us. -->
 
     <!-- Keep the remaining logs from growing without bound. -->
     <query_log>
