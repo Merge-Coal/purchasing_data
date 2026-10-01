@@ -1,7 +1,7 @@
 FROM node:22-alpine
 
-# Install build tools needed for better-sqlite3 native module
-RUN apk add --no-cache python3 make g++
+# No native modules remain (better-sqlite3 / connect-sqlite3 were removed with the
+# SQLite session store), so no apk build toolchain is needed.
 
 WORKDIR /app
 
@@ -9,16 +9,18 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Copy application source and one-off admin scripts (run via docker exec)
-COPY server.js clickhouse.js create_user.js repair_duplicate_item_ids.js ./
+# Copy application source and one-off admin scripts (run via docker exec).
+# db.js is the Postgres access layer used by the app; clickhouse.js stays for
+# the warehouse sync and the legacy ClickHouse admin scripts.
+COPY server.js db.js clickhouse.js create_user.js repair_duplicate_item_ids.js migrate_ch_to_pg.js ./
+COPY scripts/ ./scripts/
 COPY public/ ./public/
-COPY db/schema.sql ./db/schema.sql
+COPY db/schema.sql db/postgres_schema.sql ./db/
 
 # Create directories that must exist at runtime
-RUN mkdir -p exports db
+RUN mkdir -p db
 
-# The SQLite database files are mounted as a volume — not baked into the image
-# so data persists across container restarts and rebuilds
+# All data lives in Postgres (PG* env vars); the container keeps no state on disk.
 
 EXPOSE 3000
 

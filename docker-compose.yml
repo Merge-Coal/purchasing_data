@@ -7,14 +7,26 @@ services:
       - DB_PATH=/app/data/procurement.db
       - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
-      - CLICKHOUSE_HOST=clickhouse
+      # Postgres is the source of truth (database `procurement` on the shared
+      # mmi-postgres server, reached over the external mmi_pg network).
+      # Roles and grants: db/postgres_setup.sql.
+      - PGHOST=mmi-postgres
+      - PGPORT=5432
+      - PGDATABASE=procurement
+      - PGUSER=procurement_app
+      - PGPASSWORD=${PG_APP_PASSWORD:?set PG_APP_PASSWORD in .env (RUNBOOK_POSTGRES_CUTOVER.md)}
+      # ClickHouse is now the warehouse only. The app image still carries
+      # these for migrate_ch_to_pg.js (run with `docker compose run`). The
+      # container name, not the service alias `clickhouse`, because this
+      # service also sits on the shared mmi_pg network, where another
+      # project's service could answer to a generic name.
+      - CLICKHOUSE_HOST=procurement_clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_DB=procurement
       - CLICKHOUSE_USER=procurement_user
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     volumes:
       - ./data:/app/data
-      - ./exports:/app/exports
     ports:
       # NOTE: INFRASTRUCTURE.md advertises the app directly on :3000 while
       # OPERATIONS.md says port 80 via nginx. Until that is settled this stays
@@ -23,14 +35,16 @@ services:
       - "3000:3000"
     networks:
       - procurement_net
+      - mmi_pg
     cpus: 0.5
     mem_limit: 512m
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
-    depends_on:
-      clickhouse:
-        condition: service_healthy
+    # No depends_on: the app no longer needs ClickHouse to serve requests, and
+    # compose cannot depend on mmi-postgres (another project's container).
+    # The app exits if Postgres is unreachable at startup and
+    # `restart: unless-stopped` retries until it is up.
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
@@ -41,15 +55,22 @@ services:
       - CLICKHOUSE_USER=procurement_user
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      # Read by db/clickhouse-config.d/30-pg-source.xml (from_env) for the
+      # warehouse sync's pg_procurement named collection. SELECT-only role.
+      - PG_RO_PASSWORD=${PG_RO_PASSWORD:?set PG_RO_PASSWORD in .env (RUNBOOK_POSTGRES_CUTOVER.md)}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./db/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       # Sizes ClickHouse for a shared 2-core box — see the comments in each.
       - ./db/clickhouse-config.d/10-small-host.xml:/etc/clickhouse-server/config.d/10-small-host.xml:ro
       - ./db/clickhouse-config.d/20-users.xml:/etc/clickhouse-server/users.d/20-users.xml:ro
+      # Warehouse sync from Postgres: the source connection, and the grant
+      # that lets procurement_user use it. See scripts/ch_sync.sh.
+      - ./db/clickhouse-config.d/30-pg-source.xml:/etc/clickhouse-server/config.d/30-pg-source.xml:ro
+      - ./db/clickhouse-config.d/30-pg-source-users.xml:/etc/clickhouse-server/users.d/30-pg-source.xml:ro
     ports:
       # Loopback only. `procurement_app` reaches ClickHouse over
-      # procurement_net as host `clickhouse`, so nothing here needs a public
+      # procurement_net as host `procurement_clickhouse`, so nothing here needs a public
       # port — and Docker's port publishing bypasses ufw, which left these two
       # open to the internet. For the migrate/import scripts from a laptop,
       # tunnel instead:  ssh -L 8123:127.0.0.1:8123 root@<host>
@@ -67,6 +88,10 @@ services:
       start_period: 30s
     networks:
       - procurement_net
+      # To pull from mmi-postgres. ClickHouse's 8123/9000 are reachable from
+      # other containers on that network too (password-protected, as on
+      # procurement_net).
+      - mmi_pg
     # The largest CPU consumer on the box on 2026-09-28, at 61.8% while the
     # app it serves was idle. Half a core is ample for this dataset.
     cpus: 0.5
@@ -81,3 +106,10 @@ volumes:
 networks:
   procurement_net:
     driver: bridge
+  # The Docker network the shared mmi-postgres container is on. Not created or
+  # managed by this project; find its name with
+  #   docker inspect mmi-postgres -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}'
+  # and put it in .env as MMI_PG_NETWORK.
+  mmi_pg:
+    external: true
+    name: ${MMI_PG_NETWORK:?set MMI_PG_NETWORK in .env (RUNBOOK_POSTGRES_CUTOVER.md)}

@@ -1,0 +1,13 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","user_id"],
+  "columns": {"user_id":"UUID","legacy_user_id":"Nullable(Int64)","company_id":"String","username":"String","password_hash":"String","role":"LowCardinality(String)","full_name":"String","email":"String","department_id":"String","status":"LowCardinality(String)","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"user_id":"11111111-1111-4111-8111-000000000001","legacy_user_id":"1","company_id":"PTMMI","username":"requester1","password_hash":"$2a$10$hash1","role":"requester","full_name":"Rina Requester","version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"user_id":"11111111-1111-4111-8111-000000000002","legacy_user_id":"2","company_id":"PTMMI","username":"purchasing1","password_hash":"$2a$10$hash2","role":"purchasing","full_name":"Pak Purchasing","version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"user_id":"11111111-1111-4111-8111-000000000003","legacy_user_id":"3","company_id":"PTMMI","username":"md1","password_hash":"$2a$10$hash3","role":"md","full_name":"MD Old","version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"user_id":"11111111-1111-4111-8111-000000000003","legacy_user_id":"3","company_id":"PTMMI","username":"md1","password_hash":"$2a$10$hash3","role":"md","full_name":"Budi MD 王","version":"2000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-06 14:00:00.000"},
+    {"user_id":"11111111-1111-4111-8111-000000000004","legacy_user_id":null,"company_id":"PTMMI","username":"admin1","password_hash":"$2a$10$hash4","role":"admin","full_name":"Admin","version":"1000","created_at":"2026-01-06 14:00:00.000","updated_at":"2026-01-06 14:00:00.000"},
+    {"user_id":"11111111-1111-4111-8111-000000000005","legacy_user_id":"5","company_id":"PTMMI","username":"requester1","password_hash":"$2a$10$hash5","role":"requester","full_name":"Old requester1 (deleted)","version":"3000","is_deleted":1,"created_at":"2025-06-01 08:00:00.000","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

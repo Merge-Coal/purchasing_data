@@ -1,27 +1,16 @@
 'use strict';
 
 const path    = require('path');
-const fs      = require('fs');
 const express = require('express');
 const Fuse    = require('fuse.js');
-const { Parser } = require('json2csv');
 const bcrypt  = require('bcryptjs');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
-const ch      = require('./clickhouse');
+const PgSession = require('connect-pg-simple')(session);
+const db      = require('./db');
 
 const PORT    = 3000;
-const EXPORTS = path.join(__dirname, 'exports');
-if (!fs.existsSync(EXPORTS)) fs.mkdirSync(EXPORTS, { recursive: true });
 
-// ── GL account codes (hardcoded, per app convention — no config UI) ─────────────
-const GL_ACCOUNTS = {
-  inventory_expense: '5000', // goods / line items
-  accounts_payable:  '2100',
-  vat_input:         '1150', // PPN Masukan
-  pph_payable:       '2110',
-};
-// Additional-charge types → GL account code + display label
+// ── Additional-charge GL account codes (hardcoded — stored on each PO charge) ──
 const CHARGE_ACCOUNTS = {
   freight:   { code: '5100', label: 'Freight / Shipping' },
   packing:   { code: '5110', label: 'Packing' },
@@ -33,7 +22,7 @@ const CHARGE_ACCOUNTS = {
 // ── Fuse.js ───────────────────────────────────────────────────────────────────
 let fuse;
 async function rebuildFuse() {
-  const items = await ch.query('SELECT * FROM items FINAL WHERE is_deleted = 0 ORDER BY item_id');
+  const items = await db.query('SELECT * FROM items WHERE is_deleted = 0 ORDER BY item_id COLLATE "C"');
   fuse = new Fuse(items, {
     threshold: 0.4,
     includeScore: true,
@@ -49,38 +38,57 @@ async function rebuildFuse() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function today() { return new Date().toISOString().slice(0, 10); }
 
-async function nextPrNumber() {
-  const year = new Date().getFullYear();
-  const rows = await ch.query(
-    `SELECT pr_number FROM purchase_requests FINAL WHERE pr_number LIKE {pat:String} ORDER BY legacy_pr_id DESC LIMIT 1`,
-    { pat: `PR-${year}-%` }
-  );
-  if (!rows.length) return `PR-${year}-001`;
-  const seq = parseInt(rows[0].pr_number.split('-')[2], 10) + 1;
-  return `PR-${year}-${String(seq).padStart(3, '0')}`;
+// Thrown inside a db.tx() callback: rolls the transaction back and answers
+// with the given status and JSON body.
+class HttpError extends Error {
+  constructor(status, body) { super(body && body.error ? body.error : String(status)); this.status = status; this.body = body; }
+}
+function sendError(res, e) {
+  if (e instanceof HttpError) return res.status(e.status).json(e.body);
+  return res.status(500).json({ error: e.message });
 }
 
-async function nextPoNumber() {
-  const year = new Date().getFullYear();
-  const rows = await ch.query(
-    `SELECT po_number FROM purchase_orders FINAL WHERE po_number LIKE {pat:String} ORDER BY legacy_po_id DESC LIMIT 1`,
-    { pat: `PO-${year}-%` }
-  );
-  if (!rows.length) return `PO-${year}-001`;
-  const seq = parseInt(rows[0].po_number.split('-')[2], 10) + 1;
-  return `PO-${year}-${String(seq).padStart(3, '0')}`;
+// Canonical text form of a legacy (bigint) id as sent by the client: 5, "5"
+// and "05" all name the same row, as they did with ClickHouse's Int64 params.
+function legacyKey(v) {
+  try { return BigInt(String(v).trim()).toString(); } catch { return String(v); }
 }
 
-async function nextLegacyId(table, field) {
-  const rows = await ch.query(`SELECT max(${field}) AS m FROM ${table} FINAL`);
-  return (parseInt(rows[0]?.m || '0', 10) || 0) + 1;
+// Document numbers come from doc_counters, allocated inside the transaction
+// that inserts the document, so concurrent requests never share a number.
+async function nextPrNumber(client) {
+  const year = new Date().getFullYear();
+  const n = await db.nextDocNo(client, 'PR', year);
+  return `PR-${year}-${String(n).padStart(3, '0')}`;
 }
+async function nextPoNumber(client) {
+  const year = new Date().getFullYear();
+  const n = await db.nextDocNo(client, 'PO', year);
+  return `PO-${year}-${String(n).padStart(3, '0')}`;
+}
+async function nextItemId(client) {
+  const n = await db.nextDocNo(client, 'ITEM', 0);
+  return `ITEM-${String(n).padStart(4, '0')}`;
+}
+async function nextVendorId(client) {
+  const n = await db.nextDocNo(client, 'V', 0);
+  return `V-${String(n).padStart(4, '0')}`;
+}
+
+// purchase_orders as ClickHouse returned it for SELECT * (minus `version`):
+// primary_pr_id was a String column holding '' when the PO has no PR.
+const PO_COLS = `po.po_id, po.legacy_po_id, po.company_id, po.po_number,
+  COALESCE(po.primary_pr_id::text, '') AS primary_pr_id,
+  po.vendor_id, po.vendor_name, po.po_date, po.expected_delivery_date, po.currency,
+  po.exchange_rate, po.payment_term_id, po.status, po.subtotal_amount, po.discount_amount,
+  po.tax_amount, po.withholding_amount, po.total_amount, po.notes, po.search_text,
+  po.created_by_user_id, po.is_deleted, po.created_at, po.updated_at, po.charges_amount`;
 
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
 app.use(session({
-  store: new SQLiteStore({ db: 'procurement.db', dir: './db' }),
+  store: new PgSession({ pool: db.pool, tableName: 'session', createTableIfMissing: false }),
   secret: (() => { if (!process.env.SESSION_SECRET) throw new Error('SESSION_SECRET env var is required'); return process.env.SESSION_SECRET; })(),
   resave: false,
   saveUninitialized: false,
@@ -106,9 +114,9 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-    const rows = await ch.query(
-      `SELECT * FROM users FINAL WHERE username = {u:String} AND is_deleted = 0 LIMIT 1`,
-      { u: username }
+    const rows = await db.query(
+      `SELECT * FROM users WHERE username = $1 AND is_deleted = 0 LIMIT 1`,
+      [username]
     );
     const user = rows[0];
     if (!user || !bcrypt.compareSync(password, user.password_hash))
@@ -135,7 +143,7 @@ app.get('/api/auth/me', (req, res) => {
 // ── Items ─────────────────────────────────────────────────────────────────────
 app.get('/api/items', requireAuth, async (req, res) => {
   try {
-    const rows = await ch.query('SELECT *, department_id AS department FROM items FINAL WHERE is_deleted = 0 ORDER BY item_id');
+    const rows = await db.query('SELECT *, department_id AS department FROM items WHERE is_deleted = 0 ORDER BY item_id COLLATE "C"');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -175,8 +183,9 @@ app.post('/api/items/match', requireAuth, (req, res) => {
 
 app.get('/api/items/departments', requireAuth, async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT DISTINCT department_id FROM items FINAL WHERE is_deleted = 0 AND department_id != '' ORDER BY department_id`
+    const rows = await db.query(
+      `SELECT department_id FROM items WHERE is_deleted = 0 AND department_id != ''
+       GROUP BY department_id ORDER BY department_id COLLATE "C"`
     );
     res.json(rows.map(r => r.department_id));
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -186,25 +195,20 @@ app.post('/api/items', requireRole('admin'), async (req, res) => {
   try {
     const { name_en, name_cn, category, uom, department, item_type, spec } = req.body;
     if (!name_en) return res.status(400).json({ error: 'name_en required' });
-    const last = await ch.query(
-      `SELECT item_id FROM items FINAL WHERE is_deleted = 0 ORDER BY item_id DESC LIMIT 1`
-    );
-    let nextNum = 1;
-    if (last.length) {
-      const m = last[0].item_id.match(/ITEM-(\d+)/);
-      if (m) nextNum = parseInt(m[1], 10) + 1;
-    }
-    const item_id = `ITEM-${String(nextNum).padStart(4, '0')}`;
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('items', [{
-      item_id, company_id: ch.COMPANY_ID, base_item_id: '', item_code: '',
-      name_en: name_en || '', name_cn: name_cn || '', category_id: '',
-      category_name: category || '', spec: spec || '', uom: uom || 'pcs',
-      department_id: department || '', item_type: item_type || 'expense',
-      default_gl_account_id: '', min_order_qty: 0, lead_time_days: 0, status: 'active',
-      search_text: `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase(),
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
+    const item_id = await db.tx(async (c) => {
+      const item_id = await nextItemId(c);
+      await c.query(
+        `INSERT INTO items (item_id, company_id, base_item_id, item_code, name_en, name_cn, category_id,
+           category_name, spec, uom, department_id, item_type, default_gl_account_id,
+           min_order_qty, lead_time_days, status, search_text, is_deleted)
+         VALUES ($1, $2, '', '', $3, $4, '', $5, $6, $7, $8, $9, '', 0, 0, 'active', $10, 0)`,
+        [item_id, db.COMPANY_ID, name_en || '', name_cn || '',
+         category || '', spec || '', uom || 'pcs',
+         department || '', item_type || 'expense',
+         `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase()]
+      );
+      return item_id;
+    });
     await rebuildFuse();
     res.json({ item_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -212,36 +216,35 @@ app.post('/api/items', requireRole('admin'), async (req, res) => {
 
 app.put('/api/items/:id', requireRole('admin'), async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM items FINAL WHERE item_id = {id:String} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Item not found' });
     const { name_en, name_cn, category, spec, uom, item_type } = req.body;
-    if (!name_en) return res.status(400).json({ error: 'name_en required' });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('items', [{
-      ...rows[0],
-      name_en: name_en || '', name_cn: name_cn || '',
-      category_name: category || '', spec: spec || '', uom: uom || rows[0].uom,
-      item_type: item_type || rows[0].item_type,
-      search_text: `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase(),
-      version: ver, updated_at: now,
-    }]);
+    await db.tx(async (c) => {
+      const cur = await db.one(
+        `SELECT * FROM items WHERE item_id = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!cur) throw new HttpError(404, { error: 'Item not found' });
+      if (!name_en) throw new HttpError(400, { error: 'name_en required' });
+      await c.query(
+        `UPDATE items SET name_en = $2, name_cn = $3, category_name = $4, spec = $5,
+           uom = $6, item_type = $7, search_text = $8
+         WHERE item_id = $1`,
+        [cur.item_id, name_en || '', name_cn || '', category || '', spec || '',
+         uom || cur.uom, item_type || cur.item_type,
+         `${name_en} ${name_cn || ''} ${category || ''}`.toLowerCase()]
+      );
+    });
     await rebuildFuse();
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.delete('/api/items/:id', requireRole('admin'), async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM items FINAL WHERE item_id = {id:String} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const rows = await db.query(
+      `UPDATE items SET is_deleted = 1 WHERE item_id = $1 AND is_deleted = 0 RETURNING item_id`,
+      [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Item not found' });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('items', [{ ...rows[0], is_deleted: 1, version: ver, updated_at: now }]);
     await rebuildFuse();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -250,8 +253,8 @@ app.delete('/api/items/:id', requireRole('admin'), async (req, res) => {
 // ── UOM & Vendors ─────────────────────────────────────────────────────────────
 app.get('/api/uom', requireAuth, async (_req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT DISTINCT uom FROM items FINAL WHERE is_deleted = 0 AND uom != '' ORDER BY uom`
+    const rows = await db.query(
+      `SELECT uom FROM items WHERE is_deleted = 0 AND uom != '' GROUP BY uom ORDER BY uom COLLATE "C"`
     );
     res.json(rows.map(r => r.uom));
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -259,8 +262,8 @@ app.get('/api/uom', requireAuth, async (_req, res) => {
 
 app.get('/api/purposes', requireAuth, async (_req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT purpose_id, label FROM purposes FINAL WHERE is_deleted = 0 AND status = 'active' ORDER BY sort_order`
+    const rows = await db.query(
+      `SELECT purpose_id, label FROM purposes WHERE is_deleted = 0 AND status = 'active' ORDER BY sort_order`
     );
     res.json(rows.map(r => r.label));
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -270,15 +273,15 @@ app.get('/api/vendors/search', requireAuth, async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
     if (!q) return res.json([]);
-    const rows = await ch.query(
+    const rows = await db.query(
       `SELECT vendor_id, vendor_name AS name, category, contact_person AS contact, phone, email, city
-       FROM vendors FINAL
+       FROM vendors
        WHERE is_deleted = 0 AND (
-         positionCaseInsensitive(vendor_name, {q:String}) > 0 OR
-         positionCaseInsensitive(vendor_id, {q:String}) > 0
+         strpos(lower(vendor_name), lower($1)) > 0 OR
+         strpos(lower(vendor_id), lower($1)) > 0
        )
-       ORDER BY vendor_name LIMIT 10`,
-      { q }
+       ORDER BY vendor_name COLLATE "C" LIMIT 10`,
+      [q]
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -288,26 +291,19 @@ app.post('/api/vendors', requireRole('purchasing', 'admin'), async (req, res) =>
   try {
     const { vendor_name, category, contact_person, phone, mobile, email, address, city, npwp } = req.body;
     if (!vendor_name) return res.status(400).json({ error: 'vendor_name required' });
-    const last = await ch.query(
-      `SELECT vendor_id FROM vendors FINAL WHERE is_deleted = 0 AND vendor_id LIKE 'V-%' ORDER BY vendor_id DESC LIMIT 1`
-    );
-    let nextNum = 1;
-    if (last.length) {
-      const m = last[0].vendor_id.match(/V-(\d+)/);
-      if (m) nextNum = parseInt(m[1], 10) + 1;
-    }
-    const vendor_id = `V-${String(nextNum).padStart(4, '0')}`;
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('vendors', [{
-      vendor_id, company_id: ch.COMPANY_ID, vendor_code: '', vendor_name,
-      category: category || 'General', status: 'active',
-      contact_person: contact_person || '', phone: phone || '', mobile: mobile || '',
-      email: email || '', address: address || '', city: city || '', country: 'ID',
-      npwp: npwp || '', payment_term_id: '', default_currency: 'IDR', tax_profile: '',
-      risk_rating: '', blocked_reason: '',
-      search_text: `${vendor_name} ${city || ''}`.toLowerCase(),
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
+    const vendor_id = await db.tx(async (c) => {
+      const vendor_id = await nextVendorId(c);
+      await c.query(
+        `INSERT INTO vendors (vendor_id, company_id, vendor_code, vendor_name, category, status,
+           contact_person, phone, mobile, email, address, city, country, npwp, payment_term_id,
+           default_currency, tax_profile, risk_rating, blocked_reason, search_text, is_deleted)
+         VALUES ($1, $2, '', $3, $4, 'active', $5, $6, $7, $8, $9, $10, 'ID', $11, '', 'IDR', '', '', '', $12, 0)`,
+        [vendor_id, db.COMPANY_ID, vendor_name, category || 'General',
+         contact_person || '', phone || '', mobile || '', email || '', address || '', city || '',
+         npwp || '', `${vendor_name} ${city || ''}`.toLowerCase()]
+      );
+      return vendor_id;
+    });
     res.json({ vendor_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -321,43 +317,38 @@ app.post('/api/pr', requireRole('requester', 'purchasing', 'admin'), async (req,
       return res.status(400).json({ error: 'requested_by and items required' });
 
     const department = deptBody || (items[0] && items[0].department) || '';
-    const pr_number    = await nextPrNumber();
-    const pr_uuid      = ch.newUUID();
-    const legacy_pr_id = await nextLegacyId('purchase_requests', 'legacy_pr_id');
-    const now = ch.nowTs(); const ver = Number(ch.version());
 
-    await ch.insert('purchase_requests', [{
-      pr_id: pr_uuid, legacy_pr_id, company_id: ch.COMPANY_ID,
-      pr_number, requester_user_id: requester_id, requested_by_name: requested_by,
-      department_id: department, cost_center_id: '', pr_date: today(),
-      needed_by_date: null, priority: 'normal', status: 'pending',
-      total_estimated_amount: 0, currency: 'IDR', notes: notes || '',
-      search_text: `${pr_number} ${requested_by}`.toLowerCase(),
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
-
-    // Allocate the base id once — calling nextLegacyId inside the loop returns
-    // the same value for every item (rows are only inserted after the loop)
-    const first_legacy_pri_id = await nextLegacyId('purchase_request_items', 'legacy_pr_item_id');
-    const prItemRows = [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const legacy_pri_id = first_legacy_pri_id + i;
-      prItemRows.push({
-        pr_item_id: ch.newUUID(), legacy_pr_item_id: legacy_pri_id,
-        company_id: ch.COMPANY_ID, pr_id: pr_uuid, line_no: i + 1,
-        item_id: it.item_id || '', item_description: '',
-        requested_qty: parseFloat(it.qty) || 0, approved_qty: 0,
-        uom: it.uom || 'pcs',
-        estimated_unit_price: parseFloat(it.est_unit_price) || 0,
-        estimated_total_price: (parseFloat(it.est_unit_price) || 0) * (parseFloat(it.qty) || 0),
-        department_id: department || it.department || '', cost_center_id: '', gl_account_id: '',
-        status: 'pending', notes: it.notes || '',
-        version: ver, is_deleted: 0, created_at: now, updated_at: now,
-      });
-    }
-    await ch.insert('purchase_request_items', prItemRows);
-    res.json({ pr_id: legacy_pr_id, pr_number });
+    // Header, every line and the PR number commit together or not at all.
+    const { legacy_pr_id, pr_number } = await db.tx(async (c) => {
+      const pr_number = await nextPrNumber(c);
+      const hdr = await db.one(
+        `INSERT INTO purchase_requests (company_id, pr_number, requester_user_id, requested_by_name,
+           department_id, cost_center_id, pr_date, needed_by_date, priority, status,
+           total_estimated_amount, currency, notes, search_text, is_deleted)
+         VALUES ($1, $2, $3, $4, $5, '', $6, NULL, 'normal', 'pending', 0, 'IDR', $7, $8, 0)
+         RETURNING pr_id, legacy_pr_id`,
+        [db.COMPANY_ID, pr_number, requester_id, requested_by, department, today(),
+         notes || '', `${pr_number} ${requested_by}`.toLowerCase()],
+        c
+      );
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        await c.query(
+          `INSERT INTO purchase_request_items (company_id, pr_id, line_no, item_id, item_description,
+             requested_qty, approved_qty, uom, estimated_unit_price, estimated_total_price,
+             department_id, cost_center_id, gl_account_id, status, notes, is_deleted)
+           VALUES ($1, $2, $3, $4, '', $5, 0, $6, $7, $8, $9, '', '', 'pending', $10, 0)`,
+          [db.COMPANY_ID, hdr.pr_id, i + 1, it.item_id || '',
+           parseFloat(it.qty) || 0, it.uom || 'pcs',
+           parseFloat(it.est_unit_price) || 0,
+           (parseFloat(it.est_unit_price) || 0) * (parseFloat(it.qty) || 0),
+           department || it.department || '', it.notes || '']
+        );
+      }
+      return { legacy_pr_id: hdr.legacy_pr_id, pr_number };
+    });
+    // ClickHouse-era code answered with a JS number here, not the Int64 string.
+    res.json({ pr_id: Number(legacy_pr_id), pr_number });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -373,31 +364,31 @@ app.get('/api/pr', requireAuth, async (req, res) => {
         pr.department_id AS department, pr.pr_date AS date_requested,
         pr.status AS status, pr.notes AS notes, pr.requester_user_id AS requester_id,
         count(pri.pr_item_id) AS item_count,
-        countIf(pri.status = 'approved') AS approved_count,
-        countIf(pri.status = 'approved' AND COALESCE(poi_agg.total_ordered, 0) >= toFloat64(pri.approved_qty)) AS fulfilled_count
-      FROM purchase_requests AS pr FINAL
-      LEFT JOIN purchase_request_items AS pri FINAL
-        ON pri.pr_id = toString(pr.pr_id) AND pri.is_deleted = 0
+        count(*) FILTER (WHERE pri.status = 'approved') AS approved_count,
+        count(*) FILTER (WHERE pri.status = 'approved' AND COALESCE(poi_agg.total_ordered, 0) >= pri.approved_qty) AS fulfilled_count
+      FROM purchase_requests AS pr
+      LEFT JOIN purchase_request_items AS pri
+        ON pri.pr_id = pr.pr_id AND pri.is_deleted = 0
       LEFT JOIN (
         SELECT pr_item_id, sum(ordered_qty) AS total_ordered
-        FROM purchase_order_items FINAL WHERE is_deleted = 0
+        FROM purchase_order_items WHERE is_deleted = 0
         GROUP BY pr_item_id
-      ) AS poi_agg ON poi_agg.pr_item_id = toString(pri.pr_item_id)
+      ) AS poi_agg ON poi_agg.pr_item_id = pri.pr_item_id
       WHERE pr.is_deleted = 0`;
-    const params = {};
+    const params = [];
     if (requester_id) {
-      sql += ` AND pr.requester_user_id = {rid:String}`;
-      params.rid = String(requester_id);
+      params.push(String(requester_id));
+      sql += ` AND pr.requester_user_id = $${params.length}`;
     }
     if (search) {
-      sql += ` AND (positionCaseInsensitive(pr.pr_number, {s:String}) > 0 OR positionCaseInsensitive(pr.requested_by_name, {s:String}) > 0)`;
-      params.s = search;
+      params.push(search);
+      sql += ` AND (strpos(lower(pr.pr_number), lower($${params.length})) > 0 OR strpos(lower(pr.requested_by_name), lower($${params.length})) > 0)`;
     }
     sql += ` GROUP BY pr.legacy_pr_id, pr.pr_id, pr.pr_number, pr.requested_by_name,
              pr.department_id, pr.pr_date, pr.status, pr.notes, pr.requester_user_id
              ORDER BY pr.legacy_pr_id DESC`;
 
-    const rows = await ch.query(sql, params);
+    const rows = await db.query(sql, params);
     res.json(rows.map(r => {
       const approved = parseInt(r.approved_count) || 0;
       const fulfilled = parseInt(r.fulfilled_count) || 0;
@@ -417,14 +408,14 @@ app.get('/api/pr', requireAuth, async (req, res) => {
 
 app.get('/api/pr/:id', requireAuth, async (req, res) => {
   try {
-    const prs = await ch.query(
-      `SELECT * FROM purchase_requests FINAL WHERE legacy_pr_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const prs = await db.query(
+      `SELECT * FROM purchase_requests WHERE legacy_pr_id = $1 AND is_deleted = 0 LIMIT 1`,
+      [req.params.id]
     );
     if (!prs.length) return res.status(404).json({ error: 'Not found' });
     const pr = prs[0];
 
-    const rawItems = await ch.query(
+    const rawItems = await db.query(
       `SELECT
          pri.pr_item_id, pri.legacy_pr_item_id, pri.pr_id, pri.line_no,
          pri.item_id, pri.requested_qty, pri.approved_qty,
@@ -432,15 +423,16 @@ app.get('/api/pr/:id', requireAuth, async (req, res) => {
          pri.department_id, pri.status AS status, pri.notes AS notes,
          i.name_en, i.name_cn, i.spec, i.category_name AS category,
          COALESCE(poi_agg.total_ordered, 0) AS qty_fulfilled
-       FROM purchase_request_items pri FINAL
-       JOIN items i FINAL ON i.item_id = pri.item_id AND i.is_deleted = 0
+       FROM purchase_request_items pri
+       JOIN items i ON i.item_id = pri.item_id AND i.is_deleted = 0
        LEFT JOIN (
          SELECT pr_item_id, sum(ordered_qty) AS total_ordered
-         FROM purchase_order_items FINAL WHERE is_deleted = 0
+         FROM purchase_order_items WHERE is_deleted = 0
          GROUP BY pr_item_id
-       ) poi_agg ON poi_agg.pr_item_id = toString(pri.pr_item_id)
-       WHERE pri.pr_id = {prid:String} AND pri.is_deleted = 0`,
-      { prid: pr.pr_id }
+       ) poi_agg ON poi_agg.pr_item_id = pri.pr_item_id
+       WHERE pri.pr_id = $1 AND pri.is_deleted = 0
+       ORDER BY pri.line_no, pri.legacy_pr_item_id`,
+      [pr.pr_id]
     );
 
     const lineItems = rawItems.map(item => {
@@ -461,10 +453,10 @@ app.get('/api/pr/:id', requireAuth, async (req, res) => {
       };
     });
 
-    const history = await ch.query(
+    const history = await db.query(
       `SELECT *, actor_name AS approved_by, action_at AS timestamp FROM approval_actions
-       WHERE document_id = {prid:String} AND document_type = 'PR' ORDER BY action_at`,
-      { prid: pr.pr_id }
+       WHERE document_id = $1 AND document_type = 'PR' ORDER BY action_at`,
+      [pr.pr_id]
     );
 
     const estimated_total = lineItems.reduce((s, i) =>
@@ -490,24 +482,23 @@ app.post('/api/pr/:id/approve', requireRole('md', 'admin'), async (req, res) => 
     if (!approved_by || !action) return res.status(400).json({ error: 'approved_by and action required' });
     if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: 'action must be approved or rejected' });
 
-    const prs = await ch.query(
-      `SELECT * FROM purchase_requests FINAL WHERE legacy_pr_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!prs.length) return res.status(404).json({ error: 'Not found' });
-    const pr = prs[0];
-    const now = ch.nowTs(); const ver = Number(ch.version());
-
-    await ch.insert('purchase_requests', [{ ...pr, status: action, version: ver, updated_at: now }]);
-    await ch.insert('approval_actions', [{
-      approval_action_id: ch.newUUID(), company_id: ch.COMPANY_ID,
-      document_type: 'PR', document_id: pr.pr_id, document_item_id: '',
-      workflow_id: '', step_no: 0, actor_user_id: '', actor_name: approved_by,
-      action, action_at: now, from_status: pr.status, to_status: action,
-      approved_qty: null, notes: notes || '',
-    }]);
+    await db.tx(async (c) => {
+      const pr = await db.one(
+        `SELECT pr_id, status FROM purchase_requests WHERE legacy_pr_id = $1 AND is_deleted = 0 LIMIT 1 FOR NO KEY UPDATE`,
+        [req.params.id], c
+      );
+      if (!pr) throw new HttpError(404, { error: 'Not found' });
+      await c.query(`UPDATE purchase_requests SET status = $2 WHERE pr_id = $1`, [pr.pr_id, action]);
+      await c.query(
+        `INSERT INTO approval_actions (company_id, document_type, document_id, document_item_id,
+           workflow_id, step_no, actor_user_id, actor_name, action, action_at, from_status, to_status,
+           approved_qty, notes)
+         VALUES ($1, 'PR', $2, '', '', 0, '', $3, $4, clock_timestamp(), $5, $4, NULL, $6)`,
+        [db.COMPANY_ID, pr.pr_id, approved_by, action, pr.status, notes || '']
+      );
+    });
     res.json({ success: true, status: action });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.post('/api/pr/:id/items/:itemId/approve', requireRole('md', 'admin'), async (req, res) => {
@@ -517,68 +508,73 @@ app.post('/api/pr/:id/items/:itemId/approve', requireRole('md', 'admin'), async 
     if (!action) return res.status(400).json({ error: 'action required' });
     if (!['approved', 'rejected'].includes(action)) return res.status(400).json({ error: 'action must be approved or rejected' });
 
-    const prs = await ch.query(
-      `SELECT * FROM purchase_requests FINAL WHERE legacy_pr_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!prs.length) return res.status(404).json({ error: 'PR not found' });
-    const pr = prs[0];
+    const approvedQty = await db.tx(async (c) => {
+      // FOR NO KEY UPDATE (not FOR UPDATE) on PR rows: a concurrent PO insert takes FOR KEY SHARE
+      // on the PR row via its FK while holding PR-item locks; FOR UPDATE here deadlocks against it.
+      // Lock the PR first: concurrent item approvals on the same PR serialise
+      // here, so the last one always sees every other decision and flips the
+      // PR status.
+      const pr = await db.one(
+        `SELECT pr_id FROM purchase_requests WHERE legacy_pr_id = $1 AND is_deleted = 0 LIMIT 1 FOR NO KEY UPDATE`,
+        [req.params.id], c
+      );
+      if (!pr) throw new HttpError(404, { error: 'PR not found' });
 
-    const prItems = await ch.query(
-      `SELECT * FROM purchase_request_items FINAL
-       WHERE legacy_pr_item_id = {itemId:Int64} AND pr_id = {prid:String} AND is_deleted = 0 LIMIT 1`,
-      { itemId: req.params.itemId, prid: pr.pr_id }
-    );
-    if (!prItems.length) return res.status(404).json({ error: 'PR item not found' });
-    const prItem = prItems[0];
+      const prItem = await db.one(
+        `SELECT * FROM purchase_request_items
+         WHERE legacy_pr_item_id = $1 AND pr_id = $2 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.itemId, pr.pr_id], c
+      );
+      if (!prItem) throw new HttpError(404, { error: 'PR item not found' });
 
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    const approvedQty = action === 'approved'
-      ? (qty_approved ?? parseFloat(prItem.requested_qty))
-      : 0;
-    if (action === 'approved' && (isNaN(approvedQty) || approvedQty <= 0)) {
-      return res.status(400).json({ error: 'Approved quantity must be greater than 0 / 批准数量必须大于0' });
-    }
+      const approvedQty = action === 'approved'
+        ? (qty_approved ?? parseFloat(prItem.requested_qty))
+        : 0;
+      if (action === 'approved' && (isNaN(approvedQty) || approvedQty <= 0)) {
+        throw new HttpError(400, { error: 'Approved quantity must be greater than 0 / 批准数量必须大于0' });
+      }
 
-    await ch.insert('purchase_request_items', [{
-      ...prItem, status: action, approved_qty: approvedQty, version: ver, updated_at: now,
-    }]);
+      await c.query(
+        `UPDATE purchase_request_items SET status = $2, approved_qty = $3 WHERE pr_item_id = $1`,
+        [prItem.pr_item_id, action, approvedQty]
+      );
 
-    const itemRows = await ch.query(
-      `SELECT name_en FROM items FINAL WHERE item_id = {iid:String} LIMIT 1`,
-      { iid: prItem.item_id }
-    );
-    const itemName = itemRows[0]?.name_en || prItem.item_id;
+      const itemRow = await db.one(
+        `SELECT name_en FROM items WHERE item_id = $1 LIMIT 1`, [prItem.item_id], c
+      );
+      const itemName = itemRow?.name_en || prItem.item_id;
 
-    await ch.insert('approval_actions', [{
-      approval_action_id: ch.newUUID(), company_id: ch.COMPANY_ID,
-      document_type: 'PR', document_id: pr.pr_id, document_item_id: prItem.pr_item_id,
-      workflow_id: '', step_no: 0, actor_user_id: '', actor_name: approved_by,
-      action, action_at: now, from_status: prItem.status, to_status: action,
-      approved_qty: approvedQty,
-      notes: `Item: ${itemName}${notes ? ' — ' + notes : ''}`,
-    }]);
+      await c.query(
+        `INSERT INTO approval_actions (company_id, document_type, document_id, document_item_id,
+           workflow_id, step_no, actor_user_id, actor_name, action, action_at, from_status, to_status,
+           approved_qty, notes)
+         VALUES ($1, 'PR', $2, $3, '', 0, '', $4, $5, clock_timestamp(), $6, $5, $7, $8)`,
+        [db.COMPANY_ID, pr.pr_id, prItem.pr_item_id, approved_by, action, prItem.status,
+         approvedQty, `Item: ${itemName}${notes ? ' — ' + notes : ''}`]
+      );
 
-    // Auto-update PR status
-    const allItems = await ch.query(
-      `SELECT status FROM purchase_request_items FINAL WHERE pr_id = {prid:String} AND is_deleted = 0`,
-      { prid: pr.pr_id }
-    );
-    const anyPending  = allItems.some(i => !i.status || i.status === 'pending');
-    const allRejected = allItems.every(i => i.status === 'rejected');
-    if (!anyPending) {
-      const newStatus = allRejected ? 'rejected' : 'approved';
-      await ch.insert('purchase_requests', [{ ...pr, status: newStatus, version: ver + 1, updated_at: now }]);
-    }
+      // Auto-update PR status
+      const allItems = await db.query(
+        `SELECT status FROM purchase_request_items WHERE pr_id = $1 AND is_deleted = 0`,
+        [pr.pr_id], c
+      );
+      const anyPending  = allItems.some(i => !i.status || i.status === 'pending');
+      const allRejected = allItems.every(i => i.status === 'rejected');
+      if (!anyPending) {
+        const newStatus = allRejected ? 'rejected' : 'approved';
+        await c.query(`UPDATE purchase_requests SET status = $2 WHERE pr_id = $1`, [pr.pr_id, newStatus]);
+      }
+      return approvedQty;
+    });
 
     res.json({ success: true, status: action, qty_approved: approvedQty });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 // ── Approved items for PO creation ────────────────────────────────────────────
 app.get('/api/pr-items/approved', requireRole('purchasing', 'admin'), async (req, res) => {
   try {
-    const rows = await ch.query(`
+    const rows = await db.query(`
       SELECT
         pri.legacy_pr_item_id AS pr_item_id,
         pr.legacy_pr_id AS pr_id,
@@ -592,14 +588,14 @@ app.get('/api/pr-items/approved', requireRole('purchasing', 'admin'), async (req
         pr.pr_number, pr.requested_by_name AS requested_by, pr.pr_date AS date_requested,
         COALESCE(pri.department_id, pr.department_id) AS department,
         COALESCE(poi_agg.total_ordered, 0) AS qty_fulfilled
-      FROM purchase_request_items pri FINAL
-      JOIN items i FINAL ON i.item_id = pri.item_id AND i.is_deleted = 0
-      JOIN purchase_requests pr FINAL ON toString(pr.pr_id) = pri.pr_id AND pr.is_deleted = 0
+      FROM purchase_request_items pri
+      JOIN items i ON i.item_id = pri.item_id AND i.is_deleted = 0
+      JOIN purchase_requests pr ON pr.pr_id = pri.pr_id AND pr.is_deleted = 0
       LEFT JOIN (
         SELECT pr_item_id, sum(ordered_qty) AS total_ordered
-        FROM purchase_order_items FINAL WHERE is_deleted = 0
+        FROM purchase_order_items WHERE is_deleted = 0
         GROUP BY pr_item_id
-      ) poi_agg ON poi_agg.pr_item_id = toString(pri.pr_item_id)
+      ) poi_agg ON poi_agg.pr_item_id = pri.pr_item_id
       WHERE pri.status = 'approved' AND pri.is_deleted = 0
       ORDER BY pr.legacy_pr_id DESC, pri.legacy_pr_item_id
     `);
@@ -630,159 +626,164 @@ app.post('/api/po', requireRole('purchasing', 'admin'), async (req, res) => {
         return res.status(400).json({ error: 'Each charge needs a non-negative amount' });
     }
 
-    for (const it of items) {
-      if (!it.pr_item_id || it.unit_price == null || it.qty_ordered == null)
-        return res.status(400).json({ error: 'Each item needs pr_item_id, unit_price, qty_ordered' });
-      const r = await ch.query(
-        `SELECT status FROM purchase_request_items FINAL WHERE legacy_pr_item_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-        { id: it.pr_item_id }
+    // Validation reads, the PR-item row locks, the PO number, header, lines and
+    // charges all happen in one transaction.
+    const { legacy_po_id, po_number } = await db.tx(async (c) => {
+      // Per-item checks in request order, so the first failing item produces
+      // the same error message as before.
+      const checkItems = async () => {
+        for (const it of items) {
+          if (!it.pr_item_id || it.unit_price == null || it.qty_ordered == null)
+            throw new HttpError(400, { error: 'Each item needs pr_item_id, unit_price, qty_ordered' });
+          const r = await db.query(
+            `SELECT status FROM purchase_request_items WHERE legacy_pr_item_id = $1 AND is_deleted = 0 LIMIT 1`,
+            [it.pr_item_id], c
+          );
+          if (!r.length) throw new HttpError(400, { error: `pr_item_id ${it.pr_item_id} not found` });
+          if (r[0].status !== 'approved') throw new HttpError(400, { error: `Item ${it.pr_item_id} is not approved` });
+        }
+      };
+      await checkItems();
+
+      // Lock the referenced PR item rows (in id order, so two POs sharing
+      // items cannot deadlock), then re-check under the lock: a concurrent
+      // rejection/deletion that committed meanwhile is now visible.
+      const ids = [...new Set(items.map(it => legacyKey(it.pr_item_id)))];
+      const locked = await db.query(
+        `SELECT * FROM purchase_request_items
+         WHERE legacy_pr_item_id = ANY($1::bigint[]) AND is_deleted = 0
+         ORDER BY legacy_pr_item_id FOR UPDATE`,
+        [ids], c
       );
-      if (!r.length) return res.status(400).json({ error: `pr_item_id ${it.pr_item_id} not found` });
-      if (r[0].status !== 'approved') return res.status(400).json({ error: `Item ${it.pr_item_id} is not approved` });
-    }
+      await checkItems();
+      const prItemByLegacy = new Map(locked.map(r => [String(r.legacy_pr_item_id), r]));
 
-    const subtotal        = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
-    const discount_amount = subtotal * (Math.min(Math.max(parseFloat(discount_pct) || 0, 0), 100) / 100);
-    const discounted      = subtotal - discount_amount;
-    const charges_total   = charges.reduce((s, c) => s + Number(c.amount), 0);
-    const vat_base        = discounted + charges_total;
-    const vat_amount      = include_vat ? vat_base * 0.11 : 0;
-    const pph_rate        = pph_type ? PPH_RATES[pph_type] : 0;
-    const pph_amount      = discounted * pph_rate;
-    const total_amount    = discounted + charges_total + vat_amount - pph_amount;
+      const subtotal        = items.reduce((s, it) => s + it.unit_price * it.qty_ordered, 0);
+      const discount_amount = subtotal * (Math.min(Math.max(parseFloat(discount_pct) || 0, 0), 100) / 100);
+      const discounted      = subtotal - discount_amount;
+      const charges_total   = charges.reduce((s, c) => s + Number(c.amount), 0);
+      const vat_base        = discounted + charges_total;
+      const vat_amount      = include_vat ? vat_base * 0.11 : 0;
+      const pph_rate        = pph_type ? PPH_RATES[pph_type] : 0;
+      const pph_amount      = discounted * pph_rate;
+      const total_amount    = discounted + charges_total + vat_amount - pph_amount;
 
-    const po_number    = await nextPoNumber();
-    const po_uuid      = ch.newUUID();
-    const legacy_po_id = await nextLegacyId('purchase_orders', 'legacy_po_id');
-    const now = ch.nowTs(); const ver = Number(ch.version());
+      const po_number = await nextPoNumber(c);
+      const primary_pr_id = prItemByLegacy.get(legacyKey(items[0].pr_item_id))?.pr_id || null;
 
-    const firstPrItemRows = await ch.query(
-      `SELECT pr_id FROM purchase_request_items FINAL WHERE legacy_pr_item_id = {id:Int64} LIMIT 1`,
-      { id: items[0].pr_item_id }
-    );
-    const primary_pr_id = firstPrItemRows[0]?.pr_id || '';
-
-    await ch.insert('purchase_orders', [{
-      po_id: po_uuid, legacy_po_id, company_id: ch.COMPANY_ID,
-      po_number, primary_pr_id, vendor_id: '', vendor_name,
-      po_date: today(), expected_delivery_date: null,
-      currency: 'IDR', exchange_rate: 1, payment_term_id: '',
-      status: 'pending_approval', subtotal_amount: subtotal, discount_amount,
-      charges_amount: charges_total,
-      tax_amount: vat_amount, withholding_amount: pph_amount, total_amount,
-      notes: '', search_text: `${po_number} ${vendor_name}`.toLowerCase(),
-      created_by_user_id: req.session.user ? String(req.session.user.id) : '',
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
-
-    // Allocate the base id once — calling nextLegacyId inside the loop returns
-    // the same value for every item (rows are only inserted after the loop)
-    const first_legacy_poi_id = await nextLegacyId('purchase_order_items', 'legacy_po_item_id');
-    const poItemRows = [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const prItemRows = await ch.query(
-        `SELECT * FROM purchase_request_items FINAL WHERE legacy_pr_item_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-        { id: it.pr_item_id }
+      const hdr = await db.one(
+        `INSERT INTO purchase_orders (company_id, po_number, primary_pr_id, vendor_id, vendor_name,
+           po_date, expected_delivery_date, currency, exchange_rate, payment_term_id, status,
+           subtotal_amount, discount_amount, charges_amount, tax_amount, withholding_amount,
+           total_amount, notes, search_text, created_by_user_id, is_deleted)
+         VALUES ($1, $2, $3, '', $4, $5, NULL, 'IDR', 1, '', 'pending_approval',
+           $6, $7, $8, $9, $10, $11, '', $12, $13, 0)
+         RETURNING po_id, legacy_po_id`,
+        [db.COMPANY_ID, po_number, primary_pr_id, vendor_name, today(),
+         subtotal, discount_amount, charges_total, vat_amount, pph_amount, total_amount,
+         `${po_number} ${vendor_name}`.toLowerCase(),
+         req.session.user ? String(req.session.user.id) : ''],
+        c
       );
-      const prItem = prItemRows[0];
-      const legacy_poi_id = first_legacy_poi_id + i;
-      poItemRows.push({
-        po_item_id: ch.newUUID(), legacy_po_item_id: legacy_poi_id,
-        company_id: ch.COMPANY_ID, po_id: po_uuid, line_no: i + 1,
-        pr_item_id: prItem.pr_item_id, quotation_item_id: '',
-        item_id: prItem.item_id, item_description: '',
-        ordered_qty: parseFloat(it.qty_ordered), received_qty: 0, invoiced_qty: 0,
-        uom: prItem.uom, unit_price: parseFloat(it.unit_price), discount_amount: 0,
-        tax_amount: 0, total_price: parseFloat(it.unit_price) * parseFloat(it.qty_ordered),
-        gl_account_id: '', cost_center_id: '', vendor_name, status: 'open', notes: '',
-        purpose: String(it.purpose || ''),
-        version: ver, is_deleted: 0, created_at: now, updated_at: now,
-      });
-    }
-    await ch.insert('purchase_order_items', poItemRows);
 
-    if (charges.length) {
-      const chargeRows = charges.map((c, i) => ({
-        charge_id: ch.newUUID(), company_id: ch.COMPANY_ID, po_id: po_uuid,
-        line_no: i + 1, charge_type: c.charge_type,
-        description: (c.description || '').toString().slice(0, 500),
-        amount: Number(c.amount),
-        gl_account_code: CHARGE_ACCOUNTS[c.charge_type].code,
-        is_taxable: 1, version: ver, is_deleted: 0, created_at: now, updated_at: now,
-      }));
-      await ch.insert('purchase_order_charges', chargeRows);
-    }
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const prItem = prItemByLegacy.get(legacyKey(it.pr_item_id));
+        await c.query(
+          `INSERT INTO purchase_order_items (company_id, po_id, line_no, pr_item_id, quotation_item_id,
+             item_id, item_description, ordered_qty, received_qty, invoiced_qty, uom, unit_price,
+             discount_amount, tax_amount, total_price, gl_account_id, cost_center_id, vendor_name,
+             status, notes, purpose, is_deleted)
+           VALUES ($1, $2, $3, $4, '', $5, '', $6, 0, 0, $7, $8, 0, 0, $9, '', '', $10, 'open', '', $11, 0)`,
+          [db.COMPANY_ID, hdr.po_id, i + 1, prItem.pr_item_id, prItem.item_id,
+           parseFloat(it.qty_ordered), prItem.uom, parseFloat(it.unit_price),
+           parseFloat(it.unit_price) * parseFloat(it.qty_ordered),
+           vendor_name, String(it.purpose || '')]
+        );
+      }
 
-    res.json({ po_id: legacy_po_id, po_number });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+      for (let i = 0; i < charges.length; i++) {
+        const chg = charges[i];
+        await c.query(
+          `INSERT INTO purchase_order_charges (company_id, po_id, line_no, charge_type, description,
+             amount, gl_account_code, is_taxable, is_deleted)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0)`,
+          [db.COMPANY_ID, hdr.po_id, i + 1, chg.charge_type,
+           (chg.description || '').toString().slice(0, 500), Number(chg.amount),
+           CHARGE_ACCOUNTS[chg.charge_type].code]
+        );
+      }
+      return { legacy_po_id: hdr.legacy_po_id, po_number };
+    });
+
+    // ClickHouse-era code answered with a JS number here, not the Int64 string.
+    res.json({ po_id: Number(legacy_po_id), po_number });
+  } catch (e) { sendError(res, e); }
 });
 
 // ── PO Approval routes ────────────────────────────────────────────────────────
 app.post('/api/po/:id/approve', requireRole('md', 'admin'), async (req, res) => {
   try {
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!pos.length) return res.status(404).json({ error: 'PO not found' });
-    const po = pos[0];
-    if (po.status !== 'pending_approval')
-      return res.status(400).json({ error: `Cannot approve a PO with status: ${po.status}` });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('purchase_orders', [{ ...po, status: 'approved', notes: po.notes, version: ver, updated_at: now }]);
-    await ch.insert('approval_actions', [{
-      approval_action_id: ch.newUUID(), company_id: ch.COMPANY_ID,
-      document_type: 'PO', document_id: po.po_id, document_item_id: '',
-      workflow_id: '', step_no: 0, actor_user_id: '',
-      actor_name: req.session.user?.full_name || req.session.user?.username || '',
-      action: 'approved', action_at: now, from_status: po.status, to_status: 'approved',
-      approved_qty: null, notes: '',
-    }]);
+    await db.tx(async (c) => {
+      const po = await db.one(
+        `SELECT po_id, status FROM purchase_orders WHERE legacy_po_id = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!po) throw new HttpError(404, { error: 'PO not found' });
+      if (po.status !== 'pending_approval')
+        throw new HttpError(400, { error: `Cannot approve a PO with status: ${po.status}` });
+      await c.query(`UPDATE purchase_orders SET status = 'approved' WHERE po_id = $1`, [po.po_id]);
+      await c.query(
+        `INSERT INTO approval_actions (company_id, document_type, document_id, document_item_id,
+           workflow_id, step_no, actor_user_id, actor_name, action, action_at, from_status, to_status,
+           approved_qty, notes)
+         VALUES ($1, 'PO', $2, '', '', 0, '', $3, 'approved', clock_timestamp(), $4, 'approved', NULL, '')`,
+        [db.COMPANY_ID, po.po_id, req.session.user?.full_name || req.session.user?.username || '', po.status]
+      );
+    });
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.post('/api/po/:id/reject', requireRole('md', 'admin'), async (req, res) => {
   try {
     const { notes } = req.body;
     if (!notes?.trim()) return res.status(400).json({ error: 'Rejection note is required' });
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!pos.length) return res.status(404).json({ error: 'PO not found' });
-    const po = pos[0];
-    if (po.status !== 'pending_approval')
-      return res.status(400).json({ error: `Cannot reject a PO with status: ${po.status}` });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('purchase_orders', [{ ...po, status: 'rejected', notes: notes.trim(), version: ver, updated_at: now }]);
-    await ch.insert('approval_actions', [{
-      approval_action_id: ch.newUUID(), company_id: ch.COMPANY_ID,
-      document_type: 'PO', document_id: po.po_id, document_item_id: '',
-      workflow_id: '', step_no: 0, actor_user_id: '',
-      actor_name: req.session.user?.full_name || req.session.user?.username || '',
-      action: 'rejected', action_at: now, from_status: po.status, to_status: 'rejected',
-      approved_qty: null, notes: notes.trim(),
-    }]);
+    await db.tx(async (c) => {
+      const po = await db.one(
+        `SELECT po_id, status FROM purchase_orders WHERE legacy_po_id = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!po) throw new HttpError(404, { error: 'PO not found' });
+      if (po.status !== 'pending_approval')
+        throw new HttpError(400, { error: `Cannot reject a PO with status: ${po.status}` });
+      await c.query(`UPDATE purchase_orders SET status = 'rejected', notes = $2 WHERE po_id = $1`, [po.po_id, notes.trim()]);
+      await c.query(
+        `INSERT INTO approval_actions (company_id, document_type, document_id, document_item_id,
+           workflow_id, step_no, actor_user_id, actor_name, action, action_at, from_status, to_status,
+           approved_qty, notes)
+         VALUES ($1, 'PO', $2, '', '', 0, '', $3, 'rejected', clock_timestamp(), $4, 'rejected', NULL, $5)`,
+        [db.COMPANY_ID, po.po_id, req.session.user?.full_name || req.session.user?.username || '', po.status, notes.trim()]
+      );
+    });
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.post('/api/po/:id/resubmit', requireRole('purchasing', 'admin'), async (req, res) => {
   try {
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!pos.length) return res.status(404).json({ error: 'PO not found' });
-    const po = pos[0];
-    if (po.status !== 'rejected')
-      return res.status(400).json({ error: `Can only resubmit rejected POs` });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('purchase_orders', [{ ...po, status: 'pending_approval', notes: '', version: ver, updated_at: now }]);
+    await db.tx(async (c) => {
+      const po = await db.one(
+        `SELECT po_id, status FROM purchase_orders WHERE legacy_po_id = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!po) throw new HttpError(404, { error: 'PO not found' });
+      if (po.status !== 'rejected')
+        throw new HttpError(400, { error: `Can only resubmit rejected POs` });
+      await c.query(`UPDATE purchase_orders SET status = 'pending_approval', notes = '' WHERE po_id = $1`, [po.po_id]);
+    });
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.get('/api/po', requireAuth, async (req, res) => {
@@ -794,22 +795,22 @@ app.get('/api/po', requireAuth, async (req, res) => {
         po.po_number, po.vendor_name, po.po_date AS date_created,
         po.status AS status, po.total_amount AS total_amount, po.subtotal_amount AS subtotal_amount,
         po.tax_amount AS tax_amount, po.withholding_amount AS withholding_amount,
-        groupArray(DISTINCT pr.pr_number) AS pr_numbers_arr
-      FROM purchase_orders po FINAL
-      LEFT JOIN purchase_order_items poi FINAL ON poi.po_id = toString(po.po_id) AND poi.is_deleted = 0
-      LEFT JOIN purchase_request_items pri FINAL ON toString(pri.pr_item_id) = poi.pr_item_id AND pri.is_deleted = 0
-      LEFT JOIN purchase_requests pr FINAL ON toString(pr.pr_id) = pri.pr_id AND pr.is_deleted = 0
+        array_agg(DISTINCT COALESCE(pr.pr_number, '')) AS pr_numbers_arr
+      FROM purchase_orders po
+      LEFT JOIN purchase_order_items poi ON poi.po_id = po.po_id AND poi.is_deleted = 0
+      LEFT JOIN purchase_request_items pri ON pri.pr_item_id = poi.pr_item_id AND pri.is_deleted = 0
+      LEFT JOIN purchase_requests pr ON pr.pr_id = pri.pr_id AND pr.is_deleted = 0
       WHERE po.is_deleted = 0`;
-    const params = {};
+    const params = [];
     if (search) {
-      sql += ` AND (positionCaseInsensitive(po.po_number, {s:String}) > 0 OR positionCaseInsensitive(po.vendor_name, {s:String}) > 0)`;
-      params.s = search;
+      params.push(search);
+      sql += ` AND (strpos(lower(po.po_number), lower($1)) > 0 OR strpos(lower(po.vendor_name), lower($1)) > 0)`;
     }
     sql += ` GROUP BY po.legacy_po_id, po.po_id, po.po_number, po.vendor_name, po.po_date,
              po.status, po.total_amount, po.subtotal_amount, po.tax_amount, po.withholding_amount
              ORDER BY po.legacy_po_id DESC`;
 
-    const rows = await ch.query(sql, params);
+    const rows = await db.query(sql, params);
     res.json(rows.map(r => ({
       ...r,
       pr_numbers: Array.isArray(r.pr_numbers_arr) ? r.pr_numbers_arr.filter(Boolean).join(',') : '',
@@ -819,36 +820,37 @@ app.get('/api/po', requireAuth, async (req, res) => {
 
 app.get('/api/po/:id', requireAuth, async (req, res) => {
   try {
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const pos = await db.query(
+      `SELECT ${PO_COLS} FROM purchase_orders po WHERE po.legacy_po_id = $1 AND po.is_deleted = 0 LIMIT 1`,
+      [req.params.id]
     );
     if (!pos.length) return res.status(404).json({ error: 'Not found' });
     const po = pos[0];
 
-    const lineItems = await ch.query(
+    const lineItems = await db.query(
       `SELECT
          poi.po_item_id, poi.legacy_po_item_id, poi.po_id, poi.line_no,
-         poi.item_id, poi.pr_item_id, poi.ordered_qty, poi.received_qty,
+         poi.item_id, COALESCE(poi.pr_item_id::text, '') AS pr_item_id, poi.ordered_qty, poi.received_qty,
          poi.uom AS uom, poi.unit_price, poi.total_price,
          poi.status AS status, poi.notes AS notes, poi.purpose AS purpose,
-         i.name_en, i.name_cn, pr.pr_number
-       FROM purchase_order_items poi FINAL
-       JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
-       LEFT JOIN purchase_request_items pri FINAL ON toString(pri.pr_item_id) = poi.pr_item_id AND pri.is_deleted = 0
-       LEFT JOIN purchase_requests pr FINAL ON toString(pr.pr_id) = pri.pr_id AND pr.is_deleted = 0
-       WHERE poi.po_id = {poid:String} AND poi.is_deleted = 0`,
-      { poid: po.po_id }
+         i.name_en, i.name_cn, COALESCE(pr.pr_number, '') AS pr_number
+       FROM purchase_order_items poi
+       JOIN items i ON i.item_id = poi.item_id AND i.is_deleted = 0
+       LEFT JOIN purchase_request_items pri ON pri.pr_item_id = poi.pr_item_id AND pri.is_deleted = 0
+       LEFT JOIN purchase_requests pr ON pr.pr_id = pri.pr_id AND pr.is_deleted = 0
+       WHERE poi.po_id = $1 AND poi.is_deleted = 0
+       ORDER BY poi.line_no, poi.legacy_po_item_id`,
+      [po.po_id]
     );
 
     const prNums = [...new Set(lineItems.map(l => l.pr_number).filter(Boolean))].join(',');
 
-    const charges = await ch.query(
+    const charges = await db.query(
       `SELECT line_no, charge_type, description, amount, gl_account_code, is_taxable
-       FROM purchase_order_charges FINAL
-       WHERE po_id = {poid:String} AND is_deleted = 0
+       FROM purchase_order_charges
+       WHERE po_id = $1 AND is_deleted = 0
        ORDER BY line_no`,
-      { poid: po.po_id }
+      [po.po_id]
     );
 
     res.json({
@@ -867,34 +869,36 @@ app.get('/api/po/:id', requireAuth, async (req, res) => {
 
 app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   try {
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const pos = await db.query(
+      `SELECT ${PO_COLS} FROM purchase_orders po WHERE po.legacy_po_id = $1 AND po.is_deleted = 0 LIMIT 1`,
+      [req.params.id]
     );
     if (!pos.length) return res.status(404).send('Not found');
     const po = pos[0];
 
-    const lineItems = await ch.query(
+    const lineItems = await db.query(
       `SELECT
          poi.po_item_id, poi.legacy_po_item_id, poi.po_id, poi.line_no,
-         poi.item_id, poi.pr_item_id, poi.ordered_qty, poi.received_qty,
+         poi.item_id, COALESCE(poi.pr_item_id::text, '') AS pr_item_id, poi.ordered_qty, poi.received_qty,
          poi.uom AS uom, poi.unit_price, poi.total_price,
          poi.status AS status, poi.notes AS notes, poi.purpose AS purpose,
-         i.name_en, i.name_cn, i.spec, pr.pr_number, pr.department_id AS pr_department
-       FROM purchase_order_items poi FINAL
-       JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
-       LEFT JOIN purchase_request_items pri FINAL ON toString(pri.pr_item_id) = poi.pr_item_id AND pri.is_deleted = 0
-       LEFT JOIN purchase_requests pr FINAL ON toString(pr.pr_id) = pri.pr_id AND pr.is_deleted = 0
-       WHERE poi.po_id = {poid:String} AND poi.is_deleted = 0`,
-      { poid: po.po_id }
+         i.name_en, i.name_cn, i.spec, COALESCE(pr.pr_number, '') AS pr_number,
+         COALESCE(pr.department_id, '') AS pr_department
+       FROM purchase_order_items poi
+       JOIN items i ON i.item_id = poi.item_id AND i.is_deleted = 0
+       LEFT JOIN purchase_request_items pri ON pri.pr_item_id = poi.pr_item_id AND pri.is_deleted = 0
+       LEFT JOIN purchase_requests pr ON pr.pr_id = pri.pr_id AND pr.is_deleted = 0
+       WHERE poi.po_id = $1 AND poi.is_deleted = 0
+       ORDER BY poi.line_no, poi.legacy_po_item_id`,
+      [po.po_id]
     );
 
-    const charges = await ch.query(
+    const charges = await db.query(
       `SELECT line_no, charge_type, description, amount, is_taxable
-       FROM purchase_order_charges FINAL
-       WHERE po_id = {poid:String} AND is_deleted = 0
+       FROM purchase_order_charges
+       WHERE po_id = $1 AND is_deleted = 0
        ORDER BY line_no`,
-      { poid: po.po_id }
+      [po.po_id]
     );
 
     const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1023,110 +1027,15 @@ app.get('/api/po/:id/print', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).send(e.message); }
 });
 
-app.get('/api/po/:id/export', requireRole('purchasing', 'admin'), async (req, res) => {
-  try {
-    const pos = await ch.query(
-      `SELECT
-         po.po_id, po.legacy_po_id, po.po_number, po.vendor_name, po.po_date,
-         po.status AS status, po.total_amount AS total_amount, po.tax_amount AS tax_amount,
-         po.withholding_amount AS withholding_amount, po.subtotal_amount AS subtotal_amount,
-         po.primary_pr_id, po.notes AS notes,
-         pr.pr_number, pr.requested_by_name AS requested_by, pr.department_id AS department
-       FROM purchase_orders po FINAL
-       LEFT JOIN purchase_requests pr FINAL ON toString(pr.pr_id) = po.primary_pr_id AND pr.is_deleted = 0
-       WHERE po.legacy_po_id = {id:Int64} AND po.is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!pos.length) return res.status(404).json({ error: 'Not found' });
-    const po = pos[0];
-    if (po.status !== 'approved')
-      return res.status(400).json({ error: 'GL export is only available for approved POs' });
-
-    const lineItems = await ch.query(
-      `SELECT poi.po_item_id, poi.item_id, poi.ordered_qty, poi.unit_price, poi.total_price,
-              poi.uom AS uom, i.name_en
-       FROM purchase_order_items poi FINAL
-       JOIN items i FINAL ON i.item_id = poi.item_id AND i.is_deleted = 0
-       WHERE poi.po_id = {poid:String} AND poi.is_deleted = 0`,
-      { poid: po.po_id }
-    );
-
-    const charges = await ch.query(
-      `SELECT charge_type, description, amount, gl_account_code
-       FROM purchase_order_charges FINAL
-       WHERE po_id = {poid:String} AND is_deleted = 0
-       ORDER BY line_no`,
-      { poid: po.po_id }
-    );
-
-    const itemNames   = lineItems.map(i => i.name_en).join(', ');
-    const description = `${po.po_number} | ${po.vendor_name} | ${itemNames}`;
-    const dateStr     = po.po_date;
-
-    const subtotal    = parseFloat(po.subtotal_amount) || 0;
-    const vatAmount   = parseFloat(po.tax_amount) || 0;
-    const pphAmount   = parseFloat(po.withholding_amount) || 0;
-    const totalAmount = parseFloat(po.total_amount) || 0;
-
-    const dr = (code, name, amount) =>
-      ({ date: dateStr, account_code: code, account_name: name, description, debit: amount.toFixed(2), credit: '' });
-    const cr = (code, name, amount) =>
-      ({ date: dateStr, account_code: code, account_name: name, description, debit: '', credit: amount.toFixed(2) });
-
-    const round2 = n => Math.round(n * 100) / 100;
-    const glRows = [];
-    // Debits: goods, each charge, VAT input
-    glRows.push(dr(GL_ACCOUNTS.inventory_expense, 'Inventory/Expense', subtotal));
-    for (const c of charges) {
-      const acct = CHARGE_ACCOUNTS[c.charge_type] || CHARGE_ACCOUNTS.other;
-      const amt  = parseFloat(c.amount) || 0;
-      if (amt > 0) glRows.push(dr(c.gl_account_code || acct.code, acct.label, amt));
-    }
-    if (vatAmount > 0) glRows.push(dr(GL_ACCOUNTS.vat_input, 'VAT Input (PPN Masukan)', vatAmount));
-    // Credit: PPH payable, then Accounts Payable as the net balancing figure so the
-    // journal always balances against the (independently rounded) debit lines.
-    if (pphAmount > 0) glRows.push(cr(GL_ACCOUNTS.pph_payable, 'PPH Withholding Payable', pphAmount));
-    const debitSum   = round2(glRows.reduce((s, r) => s + (parseFloat(r.debit)  || 0), 0));
-    const apCredit   = round2(debitSum - pphAmount);
-    glRows.push(cr(GL_ACCOUNTS.accounts_payable, 'Accounts Payable', apCredit));
-
-    // Sanity: AP should match the stored PO total within rounding; balance must be exact.
-    const creditSum = round2(glRows.reduce((s, r) => s + (parseFloat(r.credit) || 0), 0));
-    if (debitSum !== creditSum)
-      return res.status(500).json({ error: `GL journal unbalanced: debit ${debitSum} vs credit ${creditSum}` });
-    if (Math.abs(apCredit - totalAmount) > 0.01)
-      console.warn(`GL export ${po.po_number}: AP ${apCredit} differs from stored total ${totalAmount}`);
-
-    const exportDate = today().replace(/-/g, '');
-    const filename   = `GL_${po.po_number}_${exportDate}.csv`;
-    const filepath   = path.join(EXPORTS, filename);
-
-    const parser = new Parser({ fields: ['date', 'account_code', 'account_name', 'description', 'debit', 'credit'] });
-    const csv = parser.parse(glRows);
-    fs.writeFileSync(filepath, csv);
-
-    await ch.insert('gl_exports', [{
-      gl_export_id: ch.newUUID(), legacy_log_id: null, company_id: ch.COMPANY_ID,
-      source_document_type: 'PO', source_document_id: po.po_id,
-      export_number: '', export_date: today(), filename, status: 'generated',
-      exported_by_user_id: req.session.user ? String(req.session.user.id) : '', notes: '',
-    }]);
-
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'text/csv');
-    res.send(csv);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Templates ─────────────────────────────────────────────────────────────────
 app.get('/api/templates', requireAuth, async (_req, res) => {
   try {
-    const rows = await ch.query(`
+    const rows = await db.query(`
       SELECT
         t.template_id, t.template_name, t.display_name, t.sort_order,
-        countIf(ti.is_deleted = 0) AS item_count
-      FROM pr_templates t FINAL
-      LEFT JOIN pr_template_items ti FINAL ON ti.template_id = t.template_id
+        count(*) FILTER (WHERE ti.is_deleted = 0) AS item_count
+      FROM pr_templates t
+      LEFT JOIN pr_template_items ti ON ti.template_id = t.template_id
       WHERE t.is_deleted = 0
       GROUP BY t.template_id, t.template_name, t.display_name, t.sort_order
       ORDER BY t.sort_order
@@ -1137,14 +1046,14 @@ app.get('/api/templates', requireAuth, async (_req, res) => {
 
 app.get('/api/templates/:id/items', requireAuth, async (req, res) => {
   try {
-    const rows = await ch.query(
+    const rows = await db.query(
       `SELECT
          ti.template_item_id, ti.template_id, ti.item_id,
          ti.name_en, ti.name_cn, ti.spec, ti.department, ti.uom, ti.default_qty, ti.sort_order
-       FROM pr_template_items ti FINAL
-       WHERE ti.template_id = {tid:String} AND ti.is_deleted = 0
-       ORDER BY ti.department, ti.sort_order`,
-      { tid: req.params.id }
+       FROM pr_template_items ti
+       WHERE ti.template_id = $1 AND ti.is_deleted = 0
+       ORDER BY ti.department COLLATE "C", ti.sort_order`,
+      [req.params.id]
     );
     // Group by department
     const grouped = {};
@@ -1160,63 +1069,57 @@ app.get('/api/templates/:id/items', requireAuth, async (req, res) => {
 // ── Admin deletes ─────────────────────────────────────────────────────────────
 app.delete('/api/pr/:id', requireRole('admin'), async (req, res) => {
   try {
-    const prs = await ch.query(
-      `SELECT * FROM purchase_requests FINAL WHERE legacy_pr_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!prs.length) return res.status(404).json({ error: 'PR not found' });
-    const pr = prs[0];
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    const items = await ch.query(
-      `SELECT * FROM purchase_request_items FINAL WHERE pr_id = {prid:String} AND is_deleted = 0`,
-      { prid: pr.pr_id }
-    );
-    for (const item of items) {
-      await ch.insert('purchase_request_items', [{ ...item, is_deleted: 1, version: ver, updated_at: now }]);
-    }
-    await ch.insert('purchase_requests', [{ ...pr, is_deleted: 1, version: ver, updated_at: now }]);
+    // Header and lines are soft-deleted together.
+    await db.tx(async (c) => {
+      const pr = await db.one(
+        `SELECT pr_id FROM purchase_requests WHERE legacy_pr_id = $1 AND is_deleted = 0 LIMIT 1 FOR NO KEY UPDATE`,
+        [req.params.id], c
+      );
+      if (!pr) throw new HttpError(404, { error: 'PR not found' });
+      await c.query(
+        `UPDATE purchase_request_items SET is_deleted = 1 WHERE pr_id = $1 AND is_deleted = 0`, [pr.pr_id]
+      );
+      await c.query(`UPDATE purchase_requests SET is_deleted = 1 WHERE pr_id = $1`, [pr.pr_id]);
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.delete('/api/pr-items/:itemId', requireRole('admin'), async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM purchase_request_items FINAL WHERE legacy_pr_item_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.itemId }
+    const rows = await db.query(
+      `UPDATE purchase_request_items SET is_deleted = 1
+       WHERE legacy_pr_item_id = $1 AND is_deleted = 0 RETURNING pr_item_id`,
+      [req.params.itemId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Item not found' });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('purchase_request_items', [{ ...rows[0], is_deleted: 1, version: ver, updated_at: now }]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/po/:id', requireRole('admin'), async (req, res) => {
   try {
-    const pos = await ch.query(
-      `SELECT * FROM purchase_orders FINAL WHERE legacy_po_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!pos.length) return res.status(404).json({ error: 'PO not found' });
-    const po = pos[0];
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    const poItems = await ch.query(
-      `SELECT * FROM purchase_order_items FINAL WHERE po_id = {poid:String} AND is_deleted = 0`,
-      { poid: po.po_id }
-    );
-    for (const item of poItems) {
-      await ch.insert('purchase_order_items', [{ ...item, is_deleted: 1, version: ver, updated_at: now }]);
-    }
-    await ch.insert('purchase_orders', [{ ...po, is_deleted: 1, version: ver, updated_at: now }]);
+    // Header and lines are soft-deleted together (charges were never
+    // soft-deleted by this route; unchanged).
+    await db.tx(async (c) => {
+      const po = await db.one(
+        `SELECT po_id FROM purchase_orders WHERE legacy_po_id = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!po) throw new HttpError(404, { error: 'PO not found' });
+      await c.query(
+        `UPDATE purchase_order_items SET is_deleted = 1 WHERE po_id = $1 AND is_deleted = 0`, [po.po_id]
+      );
+      await c.query(`UPDATE purchase_orders SET is_deleted = 1 WHERE po_id = $1`, [po.po_id]);
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.get('/api/users', requireRole('admin'), async (_req, res) => {
   try {
-    const users = await ch.query(
-      `SELECT legacy_user_id AS id, username, role, full_name FROM users FINAL WHERE is_deleted = 0 ORDER BY legacy_user_id`
+    const users = await db.query(
+      `SELECT legacy_user_id AS id, username, role, full_name FROM users WHERE is_deleted = 0 ORDER BY legacy_user_id`
     );
     res.json(users);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1229,24 +1132,25 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
     if (!['requester','purchasing','md','admin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
-    const existing = await ch.query(
-      `SELECT username FROM users FINAL WHERE company_id = {cid:String} AND username = {u:String} AND is_deleted = 0 LIMIT 1`,
-      { cid: ch.COMPANY_ID, u: username }
-    );
-    if (existing.length) return res.status(409).json({ error: 'Username already taken' });
-
-    const maxId = await ch.query(`SELECT max(legacy_user_id) AS m FROM users FINAL WHERE is_deleted = 0`);
-    const legacy_user_id = (Number(maxId[0]?.m) || 0) + 1;
     const password_hash = bcrypt.hashSync(password, 10);
-    const now = ch.nowTs(); const ver = Number(ch.version());
-
-    await ch.insert('users', [{
-      user_id: ch.newUUID(), legacy_user_id, company_id: ch.COMPANY_ID,
-      username, password_hash, role, full_name: full_name || '',
-      email: '', department_id: '', status: 'active',
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
-    res.json({ ok: true, id: legacy_user_id, username, role });
+    let row;
+    try {
+      // users_live_username_uq (company_id, username) WHERE is_deleted = 0
+      // rejects a duplicate live username atomically.
+      row = await db.one(
+        `INSERT INTO users (company_id, username, password_hash, role, full_name, email,
+           department_id, status, is_deleted)
+         VALUES ($1, $2, $3, $4, $5, '', '', 'active', 0)
+         RETURNING legacy_user_id`,
+        [db.COMPANY_ID, username, password_hash, role, full_name || '']
+      );
+    } catch (e) {
+      if (e.code === '23505' && e.constraint === 'users_live_username_uq')
+        return res.status(409).json({ error: 'Username already taken' });
+      throw e;
+    }
+    // ClickHouse-era code answered with a JS number here, not the Int64 string.
+    res.json({ ok: true, id: Number(row.legacy_user_id), username, role });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1254,42 +1158,40 @@ app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
   try {
     if (String(req.session.user.id) === String(req.params.id))
       return res.status(400).json({ error: 'Cannot delete your own account' });
-    const rows = await ch.query(
-      `SELECT * FROM users FINAL WHERE legacy_user_id = {id:Int64} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const rows = await db.query(
+      `UPDATE users SET is_deleted = 1 WHERE legacy_user_id = $1 AND is_deleted = 0 RETURNING user_id`,
+      [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'User not found' });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('users', [{ ...rows[0], is_deleted: 1, version: ver, updated_at: now }]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Item Requests ─────────────────────────────────────────────────────────────
+// request_id is a uuid column; comparing it as text keeps a malformed id a
+// plain 404 (as with ClickHouse's String column) instead of a cast error.
 app.post('/api/item-requests', requireAuth, async (req, res) => {
   try {
     const { name_en, name_cn, category, spec, uom, notes, source_excel_name } = req.body;
     if (!name_en) return res.status(400).json({ error: 'name_en required' });
-    const id = ch.newUUID();
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('item_requests', [{
-      request_id: id, company_id: ch.COMPANY_ID,
-      requested_by_user_id: String(req.session.user.id),
-      requested_by_name: req.session.user.full_name || req.session.user.username,
-      name_en: name_en || '', name_cn: name_cn || '',
-      category_name: category || '', spec: spec || '', uom: uom || 'pcs',
-      notes: notes || '', source_excel_name: source_excel_name || '',
-      status: 'pending', admin_notes: '',
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
-    res.json({ request_id: id });
+    const row = await db.one(
+      `INSERT INTO item_requests (company_id, requested_by_user_id, requested_by_name, name_en, name_cn,
+         category_name, spec, uom, notes, source_excel_name, status, admin_notes, is_deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', '', 0)
+       RETURNING request_id`,
+      [db.COMPANY_ID, String(req.session.user.id),
+       req.session.user.full_name || req.session.user.username,
+       name_en || '', name_cn || '', category || '', spec || '', uom || 'pcs',
+       notes || '', source_excel_name || '']
+    );
+    res.json({ request_id: row.request_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/item-requests', requireRole('admin'), async (_req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM item_requests FINAL WHERE is_deleted = 0 ORDER BY created_at DESC`
+    const rows = await db.query(
+      `SELECT * FROM item_requests WHERE is_deleted = 0 ORDER BY created_at DESC`
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1297,9 +1199,9 @@ app.get('/api/item-requests', requireRole('admin'), async (_req, res) => {
 
 app.get('/api/item-requests/mine', requireAuth, async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM item_requests FINAL WHERE is_deleted = 0 AND requested_by_user_id = {uid:String} ORDER BY created_at DESC`,
-      { uid: String(req.session.user.id) }
+    const rows = await db.query(
+      `SELECT * FROM item_requests WHERE is_deleted = 0 AND requested_by_user_id = $1 ORDER BY created_at DESC`,
+      [String(req.session.user.id)]
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1307,179 +1209,83 @@ app.get('/api/item-requests/mine', requireAuth, async (req, res) => {
 
 app.post('/api/item-requests/:id/approve', requireRole('admin'), async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM item_requests FINAL WHERE request_id = {id:String} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Request not found' });
-    const r = rows[0];
-    // Create the item
-    const last = await ch.query(`SELECT item_id FROM items FINAL WHERE is_deleted = 0 ORDER BY item_id DESC LIMIT 1`);
-    let nextNum = 1;
-    if (last.length) { const m = last[0].item_id.match(/ITEM-(\d+)/); if (m) nextNum = parseInt(m[1], 10) + 1; }
-    const item_id = `ITEM-${String(nextNum).padStart(4, '0')}`;
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('items', [{
-      item_id, company_id: ch.COMPANY_ID, base_item_id: '', item_code: '',
-      name_en: r.name_en, name_cn: r.name_cn, category_id: '',
-      category_name: r.category_name, spec: r.spec, uom: r.uom,
-      department_id: '', item_type: 'expense', default_gl_account_id: '',
-      min_order_qty: 0, lead_time_days: 0, status: 'active',
-      search_text: `${r.name_en} ${r.name_cn} ${r.category_name}`.toLowerCase(),
-      version: ver, is_deleted: 0, created_at: now, updated_at: now,
-    }]);
-    // Mark request approved
-    await ch.insert('item_requests', [{
-      ...r, status: 'approved', approved_item_id: item_id,
-      admin_notes: req.body.admin_notes || '',
-      version: ver, updated_at: now,
-    }]);
+    // The new item, its ITEM number and the request's approval commit together.
+    const item_id = await db.tx(async (c) => {
+      const r = await db.one(
+        `SELECT * FROM item_requests WHERE request_id::text = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!r) throw new HttpError(404, { error: 'Request not found' });
+      // Create the item
+      const item_id = await nextItemId(c);
+      await c.query(
+        `INSERT INTO items (item_id, company_id, base_item_id, item_code, name_en, name_cn, category_id,
+           category_name, spec, uom, department_id, item_type, default_gl_account_id,
+           min_order_qty, lead_time_days, status, search_text, is_deleted)
+         VALUES ($1, $2, '', '', $3, $4, '', $5, $6, $7, '', 'expense', '', 0, 0, 'active', $8, 0)`,
+        [item_id, db.COMPANY_ID, r.name_en, r.name_cn, r.category_name, r.spec, r.uom,
+         `${r.name_en} ${r.name_cn} ${r.category_name}`.toLowerCase()]
+      );
+      // Mark request approved
+      await c.query(
+        `UPDATE item_requests SET status = 'approved', approved_item_id = $2, admin_notes = $3
+         WHERE request_id = $1`,
+        [r.request_id, item_id, req.body.admin_notes || '']
+      );
+      return item_id;
+    });
     await rebuildFuse();
     res.json({ ok: true, item_id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 app.post('/api/item-requests/:id/reject', requireRole('admin'), async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM item_requests FINAL WHERE request_id = {id:String} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
+    const rows = await db.query(
+      `UPDATE item_requests SET status = 'rejected', admin_notes = $2
+       WHERE request_id::text = $1 AND is_deleted = 0 RETURNING request_id`,
+      [req.params.id, req.body.admin_notes || '']
     );
     if (!rows.length) return res.status(404).json({ error: 'Request not found' });
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('item_requests', [{
-      ...rows[0], status: 'rejected',
-      admin_notes: req.body.admin_notes || '',
-      version: ver, updated_at: now,
-    }]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/item-requests/:id', requireAuth, async (req, res) => {
   try {
-    const rows = await ch.query(
-      `SELECT * FROM item_requests FINAL WHERE request_id = {id:String} AND is_deleted = 0 LIMIT 1`,
-      { id: req.params.id }
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Request not found' });
-    const row = rows[0];
-    if (row.requested_by_user_id !== String(req.session.user.id) && req.session.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    const now = ch.nowTs(); const ver = Number(ch.version());
-    await ch.insert('item_requests', [{ ...row, is_deleted: 1, version: ver, updated_at: now }]);
+    await db.tx(async (c) => {
+      const row = await db.one(
+        `SELECT request_id, requested_by_user_id FROM item_requests
+         WHERE request_id::text = $1 AND is_deleted = 0 LIMIT 1 FOR UPDATE`,
+        [req.params.id], c
+      );
+      if (!row) throw new HttpError(404, { error: 'Request not found' });
+      if (row.requested_by_user_id !== String(req.session.user.id) && req.session.user.role !== 'admin') {
+        throw new HttpError(403, { error: 'Forbidden' });
+      }
+      await c.query(`UPDATE item_requests SET is_deleted = 1 WHERE request_id = $1`, [row.request_id]);
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { sendError(res, e); }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+// Schema (tables, indexes, triggers) is owned by db/postgres_schema.sql; the
+// app no longer creates or alters tables at startup.
 async function start() {
-  console.log('Connecting to ClickHouse...');
-  const ok = await ch.ping();
-  if (!ok) { console.error('ClickHouse unreachable — exiting'); process.exit(1); }
-  console.log('ClickHouse OK');
-  // Create item_requests table if not exists
-  await ch.execute(`
-    CREATE TABLE IF NOT EXISTS item_requests (
-      request_id          String,
-      company_id          String,
-      requested_by_user_id String DEFAULT '',
-      requested_by_name   String DEFAULT '',
-      name_en             String DEFAULT '',
-      name_cn             String DEFAULT '',
-      category_name       String DEFAULT '',
-      spec                String DEFAULT '',
-      uom                 String DEFAULT 'pcs',
-      notes               String DEFAULT '',
-      source_excel_name   String DEFAULT '',
-      status              String DEFAULT 'pending',
-      approved_item_id    String DEFAULT '',
-      admin_notes         String DEFAULT '',
-      version             UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-      is_deleted          UInt8  DEFAULT 0,
-      created_at          DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
-      updated_at          DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(version)
-    ORDER BY (company_id, request_id)
-  `);
-  await ch.execute(`
-    CREATE TABLE IF NOT EXISTS pr_templates (
-      template_id   String,
-      company_id    String,
-      template_name String DEFAULT '',
-      display_name  String DEFAULT '',
-      sort_order    UInt8  DEFAULT 0,
-      version       UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-      is_deleted    UInt8  DEFAULT 0,
-      created_at    DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
-      updated_at    DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(version)
-    ORDER BY (company_id, template_id)
-  `);
-  await ch.execute(`
-    CREATE TABLE IF NOT EXISTS pr_template_items (
-      template_item_id String,
-      company_id       String,
-      template_id      String,
-      item_id          String DEFAULT '',
-      name_en          String DEFAULT '',
-      name_cn          String DEFAULT '',
-      spec             String DEFAULT '',
-      department       String DEFAULT '',
-      uom              String DEFAULT '',
-      default_qty      Float64 DEFAULT 0,
-      sort_order       UInt16  DEFAULT 0,
-      version          UInt64  DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-      is_deleted       UInt8   DEFAULT 0,
-      created_at       DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
-      updated_at       DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(version)
-    ORDER BY (company_id, template_item_id)
-  `);
-  await ch.execute(`
-    CREATE TABLE IF NOT EXISTS gl_exports (
-      gl_export_id          String,
-      company_id            String,
-      legacy_log_id         Nullable(Int64),
-      source_document_type  String DEFAULT '',
-      source_document_id    String DEFAULT '',
-      export_number         String DEFAULT '',
-      export_date           String DEFAULT '',
-      filename              String DEFAULT '',
-      status                String DEFAULT 'generated',
-      exported_by_user_id   String DEFAULT '',
-      notes                 String DEFAULT '',
-      version               UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-      is_deleted            UInt8  DEFAULT 0,
-      created_at            DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
-      updated_at            DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(version)
-    ORDER BY (company_id, gl_export_id)
-  `);
-  await ch.execute(`
-    CREATE TABLE IF NOT EXISTS purchase_order_charges (
-      charge_id       UUID   DEFAULT generateUUIDv4(),
-      company_id      String,
-      po_id           String,
-      line_no         UInt16 DEFAULT 0,
-      charge_type     LowCardinality(String) DEFAULT 'other',
-      description     String DEFAULT '',
-      amount          Decimal(18, 2) DEFAULT 0,
-      gl_account_code String DEFAULT '',
-      is_taxable      UInt8  DEFAULT 1,
-      version         UInt64 DEFAULT toUInt64(toUnixTimestamp64Milli(now64(3))),
-      is_deleted      UInt8  DEFAULT 0,
-      created_at      DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3),
-      updated_at      DateTime64(3, 'Asia/Jakarta') DEFAULT now64(3)
-    ) ENGINE = ReplacingMergeTree(version)
-    ORDER BY (company_id, po_id, charge_id)
-  `);
-  await ch.execute(`
-    ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS charges_amount Decimal(18, 2) DEFAULT 0
-  `);
+  console.log('Connecting to Postgres...');
+  try {
+    await db.ping();
+  } catch (e) {
+    console.error(`Postgres unreachable — exiting (${e.message})`);
+    process.exit(1);
+  }
+  console.log('Postgres OK');
   await rebuildFuse();
   console.log(`Fuse index built (${fuse ? 'ok' : 'empty'})`);
   app.listen(PORT, () => console.log(`Procurement app running → http://localhost:${PORT}`));
 }
-start();
+start().catch((e) => {
+  console.error('Startup failed:', e.message);
+  process.exit(1);
+});

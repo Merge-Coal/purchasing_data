@@ -1,0 +1,5 @@
+{
+  "append_rows": [
+    {"approval_action_id":"77777777-7777-4777-8777-000000000001","company_id":"PTMMI","document_type":"PR","document_id":"22222222-2222-4222-8222-000000000002","actor_user_id":"3","actor_name":"Budi MD","action":"reject","action_at":"2026-01-06 10:00:00.123","notes":"same id, different content"}
+  ]
+}

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+  Lets procurement_user use the pg_procurement named collection
+  (30-pg-source.xml). Since 23.7 using any named collection needs the
+  NAMED COLLECTION grant, and only a user with named_collection_control can
+  hold it; the user the image's entrypoint generates from CLICKHOUSE_USER
+  (users.d/default-user.xml) does not get it.
+  Changelog: https://github.com/ClickHouse/ClickHouse/pull/50625
+
+  This merges into that generated user by name, so the element name must
+  match CLICKHOUSE_USER in docker-compose.yml. If it ever does not, this
+  stanza describes a user with no password and ClickHouse refuses to load
+  the users config, rather than creating an open login.
+
+  Mounted read-only at /etc/clickhouse-server/users.d/30-pg-source.xml.
+-->
+<clickhouse>
+    <users>
+        <procurement_user>
+            <named_collection_control>1</named_collection_control>
+        </procurement_user>
+    </users>
+</clickhouse>

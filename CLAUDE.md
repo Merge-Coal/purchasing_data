@@ -14,8 +14,9 @@ Requester submits PR → MD approves/rejects line items → Purchasing creates P
 |---|---|
 | Runtime | Node.js |
 | Framework | Express.js |
-| Database | SQLite via `better-sqlite3` |
-| Auth | `express-session` + `bcryptjs` + `connect-sqlite3` |
+| Database (OLTP) | PostgreSQL 16 via `pg` — database `procurement` on the shared `mmi-postgres` container (PG 14+ locally) |
+| Warehouse | ClickHouse 24.8 (`procurement_clickhouse`) — analytics only, fed from Postgres every 15 min by `scripts/ch_sync.sh` |
+| Auth | `express-session` + `bcryptjs` + `connect-pg-simple` (sessions in the Postgres `session` table) |
 | Search | Fuse.js (fuzzy, threshold 0.4) |
 | CSV Export | `json2csv` |
 | Frontend | Vanilla JS single-page app (`public/index.html`) — no framework |
@@ -24,13 +25,17 @@ Requester submits PR → MD approves/rejects line items → Purchasing creates P
 
 ## Key Files
 
-- `server.js` — Express server, all API routes, DB init, session setup
+- `server.js` — Express server, all API routes, session setup
+- `db.js` — Postgres pool and query helpers
 - `public/index.html` — entire frontend (single file, vanilla JS)
-- `db/schema.sql` — reference schema
-- `db/procurement.db` — SQLite database (gitignored in prod; checked in here for local dev)
+- `db/postgres_schema.sql` — Postgres schema (source of truth); `db/postgres_setup.sql` — roles/database bootstrap
+- `db/clickhouse_schema.sql` — warehouse schema; `db/ch_sync.sql` + `scripts/ch_sync.sh` — Postgres → ClickHouse sync
+- `migrate_ch_to_pg.js` — one-time ClickHouse → Postgres migration (cutover)
+- `scripts/pg_backup.sh` — nightly `pg_dump` of `procurement` → `/opt/backups/procurement/`
+- `RUNBOOK_POSTGRES_CUTOVER.md` — production cutover, sync, backup and rollback procedure
+- `db/schema.sql`, `db/procurement.db` — legacy SQLite schema/data (pre-ClickHouse era)
 - `item_master.db` — items table source (imported from `item_master.csv`)
 - `ingest.py` — one-time CSV ingest script for item master
-- `exports/` — generated GL CSV journal files
 
 ## Roles & Default Accounts
 
@@ -54,7 +59,7 @@ approvals       — approval_id, pr_id, approved_by, action, timestamp, notes
 po              — po_id, po_number, pr_id (nullable), vendor_name, date_created, status, total_amount
 po_items        — po_item_id, po_id, pr_item_id, item_id, qty, uom, unit_price, total_price, vendor_name
 gl_export_log   — log_id, po_id, export_date, filename
-sessions        — managed by connect-sqlite3
+sessions        — managed by connect-pg-simple (Postgres `session` table)
 ```
 
 Auto-generated IDs: `PR-YYYY-NNN`, `PO-YYYY-NNN`, `ITEM-NNNN`
@@ -77,23 +82,25 @@ Auto-generated IDs: `PR-YYYY-NNN`, `PO-YYYY-NNN`, `ITEM-NNNN`
 | GET | /api/po | Auth |
 | POST | /api/po | Purchasing / Admin |
 | GET | /api/po/:id | Auth |
-| GET | /api/po/:id/export | Auth |
 
 ## GL Export
 
-- 2-line double-entry CSV per PO
-- Debit: Account 5000 (Inventory/Expense), Credit: Account 2100 (Accounts Payable)
-- Files saved to `./exports/` as `GL_PO-YYYY-NNN_YYYYMMDD.csv`
-- Hardcoded account codes (5000 / 2100) — no config UI
+Removed (unused). The `gl_exports` table is kept for history only; nothing writes to it.
 
 ## Local Dev Setup
 
 ```bash
 npm install
-export DB_PATH=./item_master.db
+createdb procurement_dev
+psql -v ON_ERROR_STOP=1 -d procurement_dev -f db/postgres_schema.sql
+export PGDATABASE=procurement_dev SESSION_SECRET=dev-only-secret   # PGHOST/PGUSER default to the local socket/user
+node scripts/dev_seed.js        # dev users (password merge2026) + sample items
 npm start
 # open http://localhost:3000
 ```
+
+Production runs in Docker (`docker compose up -d --build app`) against `mmi-postgres`; see
+`RUNBOOK_POSTGRES_CUTOVER.md`. ClickHouse is not needed to run the app.
 
 ## Known Limitations (v1)
 

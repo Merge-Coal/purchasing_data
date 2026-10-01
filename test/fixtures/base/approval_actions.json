@@ -1,0 +1,10 @@
+{
+  "engine": "MergeTree",
+  "order_by": ["company_id","document_type","document_id","action_at","approval_action_id"],
+  "columns": {"approval_action_id":"UUID","company_id":"String","document_type":"LowCardinality(String)","document_id":"String","document_item_id":"String","workflow_id":"String","step_no":"UInt16","actor_user_id":"String","actor_name":"String","action":"LowCardinality(String)","action_at":"DateTime64(3, 'Asia/Jakarta')","from_status":"LowCardinality(String)","to_status":"LowCardinality(String)","approved_qty":"Nullable(Decimal(18, 4))","notes":"String"},
+  "rows": [
+    {"approval_action_id":"77777777-7777-4777-8777-000000000001","company_id":"PTMMI","document_type":"PR","document_id":"22222222-2222-4222-8222-000000000002","document_item_id":"33333333-3333-4333-8333-000000000002","actor_user_id":"3","actor_name":"Budi MD","action":"approve","action_at":"2026-01-06 10:00:00.123","from_status":"pending","to_status":"approved","approved_qty":"3.5000"},
+    {"approval_action_id":"77777777-7777-4777-8777-000000000002","company_id":"PTMMI","document_type":"PR","document_id":"22222222-2222-4222-8222-000000000001","document_item_id":"33333333-3333-4333-8333-000000000001","actor_user_id":"3","actor_name":"Budi MD","action":"approve","action_at":"2025-12-31 09:00:00.000","approved_qty":null,"notes":"同意"},
+    {"approval_action_id":"77777777-7777-4777-8777-000000000002","company_id":"PTMMI","document_type":"PR","document_id":"22222222-2222-4222-8222-000000000001","document_item_id":"33333333-3333-4333-8333-000000000001","actor_user_id":"3","actor_name":"Budi MD","action":"approve","action_at":"2025-12-31 09:00:00.000","approved_qty":null,"notes":"同意"}
+  ]
+}

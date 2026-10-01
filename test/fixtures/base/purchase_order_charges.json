@@ -1,0 +1,8 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","po_id","charge_id"],
+  "columns": {"charge_id":"UUID","company_id":"String","po_id":"String","line_no":"UInt16","charge_type":"LowCardinality(String)","description":"String","amount":"Decimal(18, 2)","gl_account_code":"String","is_taxable":"UInt8","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"charge_id":"66666666-6666-4666-8666-000000000001","company_id":"PTMMI","po_id":"44444444-4444-4444-8444-000000000002","line_no":1,"charge_type":"freight","description":"Ongkos kirim 运费","amount":"50000.00","gl_account_code":"5100","is_taxable":1,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","purpose_id"],
+  "columns": {"purpose_id":"String","company_id":"String","label":"String","sort_order":"UInt16","status":"LowCardinality(String)","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"purpose_id":"PUR-01","company_id":"PTMMI","label":"Operasional","sort_order":1,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"purpose_id":"PUR-01","company_id":"PTMMI","label":"Operasional Tambang","sort_order":1,"version":"2000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-06 14:00:00.000"},
+    {"purpose_id":"PUR-02","company_id":"PTMMI","label":"Kantor","sort_order":2,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

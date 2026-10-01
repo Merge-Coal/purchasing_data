@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!--
+  Postgres source for the warehouse sync (scripts/ch_sync.sh, db/ch_sync.sql).
+  Since the Postgres cutover the app's source of truth is the `procurement`
+  database on mmi-postgres; ClickHouse pulls from it every 15 minutes with
+      SELECT … FROM postgresql(pg_procurement, table = 'purchase_requests')
+
+  The password is read from the container environment at server start
+  (`from_env`), and docker compose sets PG_RO_PASSWORD from
+  /opt/purchasing_data/.env, so no secret is in this repo, in cron, or in any
+  query text. procurement_ro is SELECT-only and cannot read
+  users.password_hash or the session table (db/postgres_setup.sql).
+
+  Host `mmi-postgres` resolves because the clickhouse service joins the
+  external network named by MMI_PG_NETWORK in docker-compose.yml.
+
+  Mounted read-only at /etc/clickhouse-server/config.d/. Changing it needs a
+  ClickHouse restart (`docker compose up -d clickhouse`).
+  Docs: https://clickhouse.com/docs/en/operations/named-collections
+        https://clickhouse.com/docs/en/operations/configuration-files (from_env)
+-->
+<clickhouse>
+    <named_collections>
+        <pg_procurement>
+            <host>mmi-postgres</host>
+            <port>5432</port>
+            <database>procurement</database>
+            <schema>public</schema>
+            <user>procurement_ro</user>
+            <password from_env="PG_RO_PASSWORD"/>
+        </pg_procurement>
+    </named_collections>
+</clickhouse>

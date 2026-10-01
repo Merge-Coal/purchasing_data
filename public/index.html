@@ -1236,7 +1236,7 @@ function statusToStage(status) {
 
 // ── Pipeline timeline ──────────────────────────────────────────────────────────
 function timeline(stage, compact = false) {
-  const steps = ['Submitted','MD Review','PO Created','GL Export'];
+  const steps = ['Submitted','MD Review','PO Created'];
   const cls = compact ? 'timeline compact' : 'timeline';
   let html = `<div class="${cls}">`;
   steps.forEach((s, i) => {
@@ -1257,13 +1257,12 @@ function timeline(stage, compact = false) {
 }
 
 function prStage(pr) {
-  // 0 = Submitted, 1 = MD Review, 2 = PO Created, 3 = GL Export
+  // 0 = Submitted, 1 = MD Review, 2 = PO Created
   if (pr.status === 'pending')  return 1; // in MD queue
   if (pr.status === 'rejected') return 1; // stopped at MD
   if (pr.status !== 'approved') return 0;
   // approved — check further
-  if (pr.has_gl > 0)  return 3; // GL exported
-  if (pr.has_po > 0)  return 2; // PO created, pending GL
+  if (pr.has_po > 0)  return 2; // PO created
   return 1;                      // approved, waiting for PO
 }
 
@@ -1642,7 +1641,7 @@ async function toggleMyPRItems(pr_id) {
       <td class="text-dim">${uomLabel(it.uom)}</td>
       <td>${statusPill(it.status || 'pending')}</td>
     </tr>`).join('');
-  const stageNames = ['Submitted','MD Review','PO Created','GL Export'];
+  const stageNames = ['Submitted','MD Review','PO Created'];
   const currentStage = prStage(pr);
   detail.innerHTML = `
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:14px 18px;margin-bottom:12px">
@@ -2136,7 +2135,6 @@ function renderPOTable() {
       <td>${statusPill(po.status)}</td>
       <td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
         <button class="btn-outline" onclick="event.stopPropagation();window.open('/api/po/${po.po_id}/print','_blank')" title="Print / Save as PDF">Print PDF ↗</button>
-        ${po.status === 'approved' ? `<button class="btn-outline" onclick="event.stopPropagation();exportGL(${po.po_id},'${po.po_number}')">Export GL ↓</button>` : ''}
         ${po.status === 'rejected' && (currentRole === 'purchasing' || currentRole === 'admin') ? `<button class="btn-primary btn-sm" onclick="event.stopPropagation();resubmitPO(${po.po_id})">Resubmit</button>` : ''}
         ${currentRole === 'admin' ? `<button class="btn-delete btn-sm" onclick="event.stopPropagation();adminDeletePO(${po.po_id},'${po.po_number}')">Delete</button>` : ''}
       </td>
@@ -2347,17 +2345,6 @@ async function resubmitPO(po_id) {
   const { ok, error } = await apiFetch(`/api/po/${po_id}/resubmit`, { method: 'POST' });
   if (!ok) { alert(`Error: ${error}`); return; }
   loadPOList();
-}
-
-async function exportGL(po_id, po_number) {
-  let res;
-  try { res = await fetch(`/api/po/${po_id}/export`); } catch(err) { alert(`Export failed: ${err.message}`); return; }
-  if (!res.ok) { alert(`Export failed: HTTP ${res.status}`); return; }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `GL_${po_number}_${today()}.csv`; a.click();
-  URL.revokeObjectURL(url);
 }
 
 // ── PO Modal ───────────────────────────────────────────────────────────────────

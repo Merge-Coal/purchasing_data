@@ -1,0 +1,9 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","gl_export_id"],
+  "columns": {"gl_export_id":"String","company_id":"String","legacy_log_id":"Nullable(Int64)","source_document_type":"String","source_document_id":"String","export_number":"String","export_date":"String","filename":"String","status":"String","exported_by_user_id":"String","notes":"String","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"gl_export_id":"88888888-8888-4888-8888-000000000001","company_id":"PTMMI","legacy_log_id":null,"source_document_type":"PO","source_document_id":"44444444-4444-4444-8444-000000000001","export_date":"2026-01-09","filename":"GL_PO-2026-001_20260109.csv","status":"generated","exported_by_user_id":"2","version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"gl_export_id":"88888888-8888-4888-8888-000000000002","company_id":"PTMMI","legacy_log_id":"17","source_document_type":"PO","source_document_id":"44444444-4444-4444-8444-000000000002","export_date":"2026-01-10","filename":"GL_PO-2026-002_20260110.csv","status":"generated","version":"1000","is_deleted":1,"created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

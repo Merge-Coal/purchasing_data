@@ -1,0 +1,10 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","template_id"],
+  "columns": {"template_id":"String","company_id":"String","template_name":"String","display_name":"String","sort_order":"UInt8","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"template_id":"TPL-1","company_id":"PTMMI","template_name":"bakery","display_name":"Bakery v1","sort_order":1,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"template_id":"TPL-1","company_id":"PTMMI","template_name":"bakery","display_name":"面包房 Bakery","sort_order":1,"version":"2000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-06 14:00:00.000"},
+    {"template_id":"TPL-2","company_id":"PTMMI","template_name":"production","display_name":"生产材料","sort_order":2,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

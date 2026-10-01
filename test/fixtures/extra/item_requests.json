@@ -1,0 +1,10 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","request_id"],
+  "columns": {"request_id":"String","company_id":"String","requested_by_user_id":"String","requested_by_name":"String","name_en":"String","name_cn":"String","category_name":"String","spec":"String","uom":"String","notes":"String","source_excel_name":"String","status":"String","approved_item_id":"String","admin_notes":"String","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"request_id":"99999999-9999-4999-8999-000000000001","company_id":"PTMMI","requested_by_user_id":"1","name_en":"Drill bit","name_cn":"钻头","uom":"pcs","status":"pending","version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"request_id":"99999999-9999-4999-8999-000000000001","company_id":"PTMMI","requested_by_user_id":"1","name_en":"Drill bit","name_cn":"钻头","uom":"pcs","status":"approved","approved_item_id":"ITEM-0003","version":"2000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-06 14:00:00.000"},
+    {"request_id":"99999999-9999-4999-8999-000000000002","company_id":"PTMMI","requested_by_user_id":"1","name_en":"Rope","uom":"m","status":"rejected","version":"1000","is_deleted":1,"created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

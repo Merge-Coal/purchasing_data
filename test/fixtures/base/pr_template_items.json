@@ -1,0 +1,9 @@
+{
+  "engine": "ReplacingMergeTree(version)",
+  "order_by": ["company_id","template_item_id"],
+  "columns": {"template_item_id":"String","company_id":"String","template_id":"String","item_id":"String","name_en":"String","name_cn":"String","spec":"String","department":"String","uom":"String","default_qty":"Float64","sort_order":"UInt16","version":"UInt64","is_deleted":"UInt8","created_at":"DateTime64(3, 'Asia/Jakarta')","updated_at":"DateTime64(3, 'Asia/Jakarta')"},
+  "rows": [
+    {"template_item_id":"TI-1","company_id":"PTMMI","template_id":"TPL-1","item_id":"ITEM-0001","name_cn":"螺丝刀","uom":"pcs","default_qty":2.5,"sort_order":1,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"},
+    {"template_item_id":"TI-2","company_id":"PTMMI","template_id":"TPL-2","item_id":"GONE-ITEM","name_en":"Removed item","uom":"kg","default_qty":1,"sort_order":1,"version":"1000","created_at":"2026-01-05 09:15:30.123","updated_at":"2026-01-05 09:15:30.123"}
+  ]
+}

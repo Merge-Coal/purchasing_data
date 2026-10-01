@@ -1,5 +1,45 @@
 # ClickHouse — PT Merge Mining Industri Procurement
 
+## Status: warehouse, fed from Postgres
+
+Since the Postgres cutover (`RUNBOOK_POSTGRES_CUTOVER.md`) the app reads and writes
+**PostgreSQL** (database `procurement` on `mmi-postgres`). ClickHouse is the analytics
+warehouse and the rollback copy: it no longer receives writes from the app, only from
+the sync. Do not write to the synced tables by hand — the next sync will not undo it,
+and Postgres will not see it.
+
+How the sync works:
+
+- ClickHouse pulls from Postgres itself, through the named collection `pg_procurement`
+  (`db/clickhouse-config.d/30-pg-source.xml`; SELECT-only role `procurement_ro`, password
+  from the container env `PG_RO_PASSWORD`). `procurement_ro` cannot read
+  `users.password_hash` or `session`.
+- `scripts/ch_sync.sh` (host cron, every 15 min) fills in `db/ch_sync.sql` and runs it.
+  14 tables: purposes, users, vendors, items, purchase_requests, purchase_request_items,
+  purchase_orders, purchase_order_items, purchase_order_charges, approval_actions,
+  gl_exports, item_requests, pr_templates, pr_template_items.
+- ReplacingMergeTree tables get rows with `updated_at` after the last run (15-minute
+  overlap), `version` = `updated_at` in ms, so the newest edit wins and re-sends are
+  harmless. Append-only `approval_actions` / `gl_exports` get only ids not yet present.
+- The watermark is `procurement._sync_state` (one row per successful run). A failed run
+  writes no row, so the next run retries the same window.
+- Sync only inserts: soft deletes (`is_deleted = 1`) arrive, hard deletes in Postgres do not.
+- `users.password_hash` keeps whatever ClickHouse already had (pre-cutover users); users
+  created after cutover have `''` here.
+
+Commands (on the server, in `/opt/purchasing_data`):
+
+```bash
+scripts/ch_sync.sh            # incremental (what cron runs)
+scripts/ch_sync.sh --full     # every row again — first run, or repair after a gap
+scripts/ch_sync.sh --verify   # every Postgres id present in ClickHouse? exit 1 if not
+scripts/ch_sync.sh --print    # show the SQL an incremental run would send
+tail -20 /var/log/procurement-ch-sync.log
+```
+
+Query current state with `FINAL` as before. The sections below describe the
+pre-cutover setup, when ClickHouse was the app's live database.
+
 ## Connection Details
 
 | Property | Value |
