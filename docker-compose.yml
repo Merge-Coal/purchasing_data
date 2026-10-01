@@ -7,6 +7,7 @@ services:
       - DB_PATH=/app/data/procurement.db
       - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
+      - TZ=Asia/Bangkok
       # Postgres is the source of truth (database `procurement` on the shared
       # mmi-postgres server, reached over the external mmi_pg network).
       # Roles and grants: db/postgres_setup.sql.

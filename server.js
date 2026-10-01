@@ -36,7 +36,9 @@ async function rebuildFuse() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function today() { return new Date().toISOString().slice(0, 10); }
+// Calendar date in the app's time zone (Asia/Bangkok, UTC+7). toISOString()
+// is UTC and would report yesterday between 00:00 and 07:00 local time.
+function today() { return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }); }
 
 // Thrown inside a db.tx() callback: rolls the transaction back and answers
 // with the given status and JSON body.

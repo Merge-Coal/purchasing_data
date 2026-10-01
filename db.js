@@ -12,7 +12,7 @@
  *   bigint (int8)        → string   ("42")          — pg default, kept
  *   numeric              → number   (12.5)          — ClickHouse Decimal was a JSON number
  *   date                 → string   ("YYYY-MM-DD")  — no JS Date / timezone shift
- *   timestamptz/timestamp→ string   ("YYYY-MM-DD HH:MM:SS.mmm", Asia/Jakarta wall time)
+ *   timestamptz/timestamp→ string   ("YYYY-MM-DD HH:MM:SS.mmm", Asia/Bangkok wall time)
  *   smallint/integer     → number   — pg default
  *   uuid                 → string   — pg default
  *
@@ -25,7 +25,7 @@
 const { Pool, types: pgTypes } = require('pg');
 
 const COMPANY_ID = 'PTMMI';
-const APP_TZ_OFFSET_MIN = 7 * 60; // Asia/Jakarta is a fixed UTC+07:00 (no DST)
+const APP_TZ_OFFSET_MIN = 7 * 60; // Asia/Bangkok is a fixed UTC+07:00 (no DST)
 
 // ── Type parsers (per-pool, not global) ──────────────────────────────────────
 const OID = { INT8: 20, NUMERIC: 1700, DATE: 1082, TIMESTAMP: 1114, TIMESTAMPTZ: 1184 };
@@ -37,8 +37,8 @@ function parseNumeric(v) {
 const pad = (n, w = 2) => String(n).padStart(w, '0');
 
 /**
- * Postgres text timestamp → "YYYY-MM-DD HH:MM:SS.mmm" in Jakarta wall time.
- * The session TimeZone is Asia/Jakarta, so timestamptz normally arrives as
+ * Postgres text timestamp → "YYYY-MM-DD HH:MM:SS.mmm" in Bangkok wall time.
+ * The session TimeZone is Asia/Bangkok, so timestamptz normally arrives as
  * "2026-10-01 10:57:29.12+07"; any other offset is converted to +07 first.
  * Fractions are truncated/padded to exactly 3 digits (DateTime64(3)).
  */
@@ -79,9 +79,9 @@ const pool = new Pool({
   max: parseInt(process.env.PGPOOL_MAX || '5', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
-  // Every pooled connection runs in Jakarta time with ISO date output, so
+  // Every pooled connection runs in Bangkok time with ISO date output, so
   // timestamptz text is "YYYY-MM-DD HH:MM:SS[.ffffff]+07".
-  options: '-c TimeZone=Asia/Jakarta -c DateStyle=ISO,MDY',
+  options: '-c TimeZone=Asia/Bangkok -c DateStyle=ISO,MDY',
   application_name: process.env.PGAPPNAME || 'procurement-app',
   types,
 });

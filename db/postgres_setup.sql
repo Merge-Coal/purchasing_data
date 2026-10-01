@@ -93,6 +93,9 @@ SELECT format('CREATE DATABASE %I OWNER procurement_owner ENCODING %L TEMPLATE t
  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dbname') \gexec
 
 ALTER DATABASE :"dbname" OWNER TO procurement_owner;
+-- Procurement runs on Bangkok time (UTC+7, no DST). The warehouse role above
+-- overrides this with UTC; the app also sets it per connection (db.js).
+ALTER DATABASE :"dbname" SET timezone = 'Asia/Bangkok';
 REVOKE ALL ON DATABASE :"dbname" FROM PUBLIC;
 GRANT CONNECT, TEMPORARY ON DATABASE :"dbname" TO procurement_app;
 GRANT CONNECT ON DATABASE :"dbname" TO procurement_ro;

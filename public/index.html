@@ -3096,7 +3096,7 @@ function fmtMoney(v) {
   return 'Rp ' + Number(v).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 function today() {
-  return new Date().toISOString().slice(0,10).replace(/-/g,'');
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }).replace(/-/g,'');
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────────
