@@ -75,7 +75,9 @@ ALTER ROLE procurement_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLI
 ALTER ROLE procurement_app   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
       CONNECTION LIMIT 30 PASSWORD :'app_password';
 ALTER ROLE procurement_ro    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
-      CONNECTION LIMIT 5  PASSWORD :'ro_password';
+      -- ClickHouse keeps up to 16 pooled connections open per named collection
+      -- (postgresql_connection_pool_size), so 5 was exhausted by the verify query.
+      CONNECTION LIMIT 20 PASSWORD :'ro_password';
 
 -- ClickHouse's postgresql() reader drops the UTC offset from timestamptz text
 -- and reads the wall-clock part, so the warehouse role always gets UTC, ISO
