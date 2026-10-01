@@ -293,6 +293,41 @@ function convert(t, col, v, chType) {
   }
 }
 
+// The old app allocated legacy ids with max()+1 before inserting, so every line
+// of a PR (or PO) saved in one go could share a single legacy id. Legacy ids
+// only matter for live rows (they go into frontend URLs), so when the rows that
+// share an id are all deleted, or exactly one of them is live, keep the id on
+// that live row (or the oldest if all are deleted) and set the others to NULL so
+// the Postgres identity gives them fresh ones. Two or more LIVE rows sharing an
+// id is real ambiguity: leave it alone and let pre-flight fail.
+function repairDuplicateLegacyIds(src) {
+  const repairs = [];
+  for (const [t, col] of Object.entries(LEGACY_COLS)) {
+    if (src[t].missing) continue;
+    const isLive = r => Number(r.is_deleted ?? 0) === 0;
+    const groups = new Map();
+    for (const r of src[t].rows) {
+      if (r[col] === null || r[col] === undefined) continue;
+      const k = String(r[col]);
+      (groups.get(k) || groups.set(k, []).get(k)).push(r);
+    }
+    for (const [k, rs] of groups) {
+      if (rs.length < 2) continue;
+      const liveRows = rs.filter(isLive);
+      if (liveRows.length > 1) continue;
+      const keeper = liveRows[0] || [...rs].sort((a, b) =>
+        String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
+        String(a[PK[t]]).localeCompare(String(b[PK[t]])))[0];
+      for (const r of rs) {
+        if (r === keeper) continue;
+        repairs.push(`${t}.${col}=${k}: kept on ${keeper[PK[t]]}${isLive(keeper) ? '' : ' (deleted)'}; ${r[PK[t]]} (deleted) gets a new id`);
+        r[col] = null;
+      }
+    }
+  }
+  return repairs;
+}
+
 // Build the insert plan for every table + collect conversion errors.
 function buildPlan(src, meta, tcols) {
   const plan = {}; const convErrors = []; const notes = [];
@@ -532,6 +567,7 @@ async function main() {
     }
     const src = await readSource(meta);
     const tcols = await readTargetCols(pg);
+    const legacyRepairs = repairDuplicateLegacyIds(src);
     const { plan, convErrors, notes } = buildPlan(src, meta, tcols);
 
     printTable(['table', 'engine', 'read', 'collapsed', 'rows', 'live', 'deleted', 'new_legacy_id'],
@@ -554,6 +590,10 @@ async function main() {
     }
     console.log('  note: the ClickHouse `version` column is not copied (Postgres has none)');
     for (const n of notes) { console.log(`  WARNING: ${n.title}`); for (const l of n.lines) console.log(`        ${l}`); }
+    if (legacyRepairs.length) {
+      console.log(`  REPAIR: ${legacyRepairs.length} deleted row(s) shared a legacy id (old max()+1 numbering); they get new ids, live rows are untouched:`);
+      for (const l of capList(legacyRepairs)) console.log(`        ${l}`);
+    }
 
     // 2. Pre-flight
     console.log('\n== Pre-flight checks ==');

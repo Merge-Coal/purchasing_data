@@ -1,0 +1,9 @@
+{
+  "append_rows": [
+    {"pr_item_id":"33333333-3333-4333-8333-000000000101","legacy_pr_item_id":"1","company_id":"PTMMI","pr_id":"22222222-2222-4222-8222-000000000001","line_no":2,"item_id":"ITEM-0001","requested_qty":"1","uom":"pcs","version":"1000","is_deleted":1,"created_at":"2026-01-04 08:00:00.000","updated_at":"2026-01-04 08:00:00.000"},
+    {"pr_item_id":"33333333-3333-4333-8333-000000000102","legacy_pr_item_id":"1","company_id":"PTMMI","pr_id":"22222222-2222-4222-8222-000000000001","line_no":3,"item_id":"ITEM-0001","requested_qty":"1","uom":"pcs","version":"1000","is_deleted":1,"created_at":"2026-01-04 08:00:01.000","updated_at":"2026-01-04 08:00:01.000"},
+    {"pr_item_id":"33333333-3333-4333-8333-000000000202","legacy_pr_item_id":"50","company_id":"PTMMI","pr_id":"22222222-2222-4222-8222-000000000001","line_no":5,"item_id":"ITEM-0001","requested_qty":"1","uom":"pcs","version":"1000","is_deleted":1,"created_at":"2026-01-04 09:00:02.000","updated_at":"2026-01-04 09:00:02.000"},
+    {"pr_item_id":"33333333-3333-4333-8333-000000000201","legacy_pr_item_id":"50","company_id":"PTMMI","pr_id":"22222222-2222-4222-8222-000000000001","line_no":4,"item_id":"ITEM-0001","requested_qty":"1","uom":"pcs","version":"1000","is_deleted":1,"created_at":"2026-01-04 09:00:01.000","updated_at":"2026-01-04 09:00:01.000"},
+    {"pr_item_id":"33333333-3333-4333-8333-000000000203","legacy_pr_item_id":"50","company_id":"PTMMI","pr_id":"22222222-2222-4222-8222-000000000001","line_no":6,"item_id":"ITEM-0001","requested_qty":"1","uom":"pcs","version":"1000","is_deleted":1,"created_at":"2026-01-04 09:00:03.000","updated_at":"2026-01-04 09:00:03.000"}
+  ]
+}

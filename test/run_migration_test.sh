@@ -174,6 +174,27 @@ expect_exit "load error exits 3" 3 "$RC"
 expect_grep "reports rollback" "transaction ROLLED BACK" "$LOG/rollback.out"
 check "data unchanged after rollback (TRUNCATE undone too)" "SELECT '$(checksum)'" "$SUM_B"
 
+echo; echo "== 7c. deleted rows sharing a legacy id (old max()+1 numbering) are repaired =="
+start_fake "$FIX/base:$FIX/dupleg"
+migrate dupleg --truncate
+expect_exit "duplicate legacy ids among deleted rows: migration succeeds" 0 "$RC"
+expect_grep "reports the repair" "REPAIR: 4 deleted row(s) shared a legacy id" "$LOG/dupleg.out"
+expect_grep "verification passed" "Verification PASSED" "$LOG/dupleg.out"
+check "live row keeps its legacy id" "SELECT legacy_pr_item_id FROM purchase_request_items WHERE pr_item_id='33333333-3333-4333-8333-000000000001'" "1"
+check "all-deleted group: oldest row keeps the id" "SELECT legacy_pr_item_id FROM purchase_request_items WHERE pr_item_id='33333333-3333-4333-8333-000000000201'" "50"
+check "all 10 rows loaded, legacy ids unique" "SELECT count(*)||','||count(DISTINCT legacy_pr_item_id) FROM purchase_request_items" "10,10"
+check "repaired rows got ids past the old maximum" "SELECT min(legacy_pr_item_id) > 50 FROM purchase_request_items WHERE pr_item_id IN ('33333333-3333-4333-8333-000000000101','33333333-3333-4333-8333-000000000102','33333333-3333-4333-8333-000000000202','33333333-3333-4333-8333-000000000203')" "t"
+check "identity sequence = max(legacy id)" "SELECT '$(seqval purchase_request_items legacy_pr_item_id)' = (SELECT max(legacy_pr_item_id)::text FROM purchase_request_items)" "t"
+
+echo; echo "== 7d. two LIVE rows sharing a legacy id must still stop the migration =="
+start_fake "$FIX/base:$FIX/livedup"
+SUM_C=$(checksum)
+migrate livedup --truncate
+expect_exit "live duplicate legacy id fails pre-flight" 1 "$RC"
+expect_grep "names the duplicate" "purchase_request_items: duplicate legacy_pr_item_id" "$LOG/livedup.out"
+expect_grep "states nothing written" "Nothing was written" "$LOG/livedup.out"
+check "data unchanged after failed pre-flight" "SELECT '$(checksum)'" "$SUM_C"
+
 echo; echo "== 8. restore base data for QC =="
 start_fake "$FIX/base"
 migrate final --truncate
