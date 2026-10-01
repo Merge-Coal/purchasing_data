@@ -33,8 +33,6 @@ Requester submits PR → MD approves/rejects line items → Purchasing creates P
 - `migrate_ch_to_pg.js` — one-time ClickHouse → Postgres migration (cutover)
 - `scripts/pg_backup.sh` — nightly `pg_dump` of `procurement` → `/opt/backups/procurement/`
 - `RUNBOOK_POSTGRES_CUTOVER.md` — production cutover, sync, backup and rollback procedure
-- `db/schema.sql`, `db/procurement.db` — legacy SQLite schema/data (pre-ClickHouse era)
-- `item_master.db` — items table source (imported from `item_master.csv`)
 - `ingest.py` — one-time CSV ingest script for item master
 
 ## Roles & Default Accounts

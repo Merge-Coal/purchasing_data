@@ -4,7 +4,6 @@ services:
     container_name: procurement_app
     restart: unless-stopped
     environment:
-      - DB_PATH=/app/data/procurement.db
       - SESSION_SECRET=${SESSION_SECRET}
       - NODE_ENV=production
       - TZ=Asia/Bangkok
@@ -26,8 +25,6 @@ services:
       - CLICKHOUSE_DB=procurement
       - CLICKHOUSE_USER=procurement_user
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-    volumes:
-      - ./data:/app/data
     ports:
       # NOTE: INFRASTRUCTURE.md advertises the app directly on :3000 while
       # OPERATIONS.md says port 80 via nginx. Until that is settled this stays

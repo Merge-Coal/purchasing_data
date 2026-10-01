@@ -1,3 +1,5 @@
+> **OUTDATED (before the 2026-10-01 Postgres cutover):** this document describes the SQLite / ClickHouse-era setup and its commands no longer apply. Current setup: `CLAUDE.md` and `RUNBOOK_POSTGRES_CUTOVER.md`.
+
 # Operations & Monitoring Checklist
 ## PT Merge Mining Industri — e-Procurement System
 

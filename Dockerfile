@@ -15,7 +15,7 @@ RUN npm install --omit=dev
 COPY server.js db.js clickhouse.js create_user.js repair_duplicate_item_ids.js migrate_ch_to_pg.js ./
 COPY scripts/ ./scripts/
 COPY public/ ./public/
-COPY db/schema.sql db/postgres_schema.sql ./db/
+COPY db/postgres_schema.sql ./db/
 
 # Create directories that must exist at runtime
 RUN mkdir -p db
