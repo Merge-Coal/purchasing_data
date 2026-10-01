@@ -5,6 +5,10 @@
 #   scripts/ch_sync.sh            incremental: rows changed since the last
 #                                 successful run (minus a 15-minute overlap)
 #   scripts/ch_sync.sh --full     every row (first run after cutover; repairs)
+#   scripts/ch_sync.sh --bump     like --full, but every row is re-sent with a version
+#                                 no lower than now, so it replaces ClickHouse's copy
+#                                 even where that has an equal or newer version
+#                                 (one-time: after scripts/fix_timestamps.sql)
 #   scripts/ch_sync.sh --verify   compare ids Postgres vs ClickHouse, no writes;
 #                                 exits 1 if any Postgres row is missing
 #   scripts/ch_sync.sh --print    print the SQL an incremental run would send
@@ -32,13 +36,15 @@ OVERLAP_MINUTES=15
 RUN_TIMEOUT=900   # seconds; a run normally takes a few seconds
 
 MODE=incremental
+BUMP=0
 case "${1:-}" in
   "")       ;;
   --full)   MODE=full ;;
+  --bump)   MODE=full; BUMP=1 ;;
   --verify) MODE=verify ;;
   --print)  MODE=print ;;
-  -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
-  *) echo "usage: $0 [--full|--verify|--print]" >&2; exit 2 ;;
+  -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+  *) echo "usage: $0 [--full|--bump|--verify|--print]" >&2; exit 2 ;;
 esac
 
 log() {
@@ -135,6 +141,15 @@ if ! RUN_START="$(chq --query "SELECT toString(now64(3, 'UTC'))" 2>&1)" \
   exit 1
 fi
 
+VERSION_FLOOR=0
+if [ "$BUMP" = 1 ]; then
+  if ! VERSION_FLOOR="$(chq --query "SELECT toUnixTimestamp64Milli(now64(3))" 2>&1)" \
+     || ! [[ "$VERSION_FLOOR" =~ ^[0-9]{13}$ ]]; then
+    log "FAILED: cannot read the ClickHouse clock for --bump: $(echo "$VERSION_FLOOR" | tr '\n' ' ' | cut -c1-500)"
+    exit 1
+  fi
+fi
+
 SINCE='1970-01-01 00:00:00.000'
 if [ "$MODE" = incremental ] || [ "$MODE" = print ]; then
   state="$(chq --query "SELECT count(), toString(max(synced_through) - toIntervalMinute($OVERLAP_MINUTES))
@@ -149,7 +164,7 @@ fi
 [[ "$SINCE" =~ $TS_RE ]] || { log "FAILED: unexpected watermark '$SINCE'"; exit 1; }
 
 sql="$(sed -e "s/@SINCE@/$SINCE/g" -e "s/@RUN_START@/$RUN_START/g" \
-           -e "s/@MODE@/$MODE/g" "$SQL_TEMPLATE")"
+           -e "s/@MODE@/$MODE/g" -e "s/@VERSION_FLOOR@/$VERSION_FLOOR/g" "$SQL_TEMPLATE")"
 
 if [ "$MODE" = print ]; then
   echo "$sql"
@@ -157,7 +172,7 @@ if [ "$MODE" = print ]; then
 fi
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-log "start: rows changed after $SINCE UTC"
+log "start: rows changed after $SINCE UTC$([ "$BUMP" = 1 ] && echo "; version floor $VERSION_FLOOR")"
 started=$SECONDS
 if ! err="$(echo "$sql" | CHQ_STDIN=1 chq --multiquery 2>&1 >/dev/null)"; then
   log "FAILED after $((SECONDS - started))s; watermark not advanced: $(echo "$err" | tr '\n' ' ' | cut -c1-2000)"

@@ -6,6 +6,9 @@
 --                start minus a 15-minute overlap; 1970-01-01 for --full)
 --   @RUN_START@  this run's start time in UTC, recorded as the new watermark
 --   @MODE@       'incremental' or 'full'
+--   @VERSION_FLOOR@  0 normally. With --bump, the current time in epoch ms: every
+--                row is re-sent with a version at least this high, so it beats any
+--                existing copy (used once, after the timestamp correction)
 -- and streams the result into clickhouse-client --multiquery. The client stops
 -- at the first failing statement, so the watermark row at the bottom is only
 -- written when every table before it succeeded.
@@ -47,7 +50,7 @@
 INSERT INTO procurement.purposes
     (purpose_id, company_id, label, sort_order, status, version, is_deleted, created_at, updated_at)
 SELECT s.purpose_id, s.company_id, s.label, toUInt16(s.sort_order), s.status,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -60,7 +63,7 @@ INSERT INTO procurement.users
      email, department_id, status, version, is_deleted, created_at, updated_at)
 SELECT s.user_id, s.legacy_user_id, s.company_id, s.username, h.password_hash, s.role,
        s.full_name, s.email, s.department_id, s.status,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -83,7 +86,7 @@ SELECT s.vendor_id, s.company_id, s.vendor_code, s.vendor_name, s.category, s.st
        s.contact_person, s.phone, s.mobile, s.email, s.address, s.city, s.country,
        s.npwp, s.payment_term_id, s.default_currency, s.tax_profile, s.risk_rating,
        s.onboarding_date, s.blocked_reason, s.search_text,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -100,7 +103,7 @@ SELECT s.item_id, s.company_id, s.base_item_id, s.item_code, s.name_en, s.name_c
        s.category_id, s.category_name, s.spec, s.uom, s.department_id, s.item_type,
        s.default_gl_account_id, toDecimal64(s.min_order_qty, 4), toUInt16(s.lead_time_days),
        s.status, s.search_text,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -117,7 +120,7 @@ SELECT s.pr_id, s.legacy_pr_id, s.company_id, s.pr_number, s.requester_user_id,
        s.requested_by_name, s.department_id, s.cost_center_id, s.pr_date,
        s.needed_by_date, s.priority, s.status,
        toDecimal64(s.total_estimated_amount, 2), s.currency, s.notes, s.search_text,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -135,7 +138,7 @@ SELECT s.pr_item_id, s.legacy_pr_item_id, s.company_id, toString(s.pr_id),
        toDecimal64(s.requested_qty, 4), toDecimal64(s.approved_qty, 4), s.uom,
        toDecimal64(s.estimated_unit_price, 2), toDecimal64(s.estimated_total_price, 2),
        s.department_id, s.cost_center_id, s.gl_account_id, s.status, s.notes,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -157,7 +160,7 @@ SELECT s.po_id, s.legacy_po_id, s.company_id, s.po_number,
        toDecimal64(s.charges_amount, 2), toDecimal64(s.tax_amount, 2),
        toDecimal64(s.withholding_amount, 2), toDecimal64(s.total_amount, 2),
        s.notes, s.search_text, s.created_by_user_id,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -179,7 +182,7 @@ SELECT s.po_item_id, s.legacy_po_item_id, s.company_id, toString(s.po_id),
        toDecimal64(s.unit_price, 2), toDecimal64(s.discount_amount, 2),
        toDecimal64(s.tax_amount, 2), toDecimal64(s.total_price, 2),
        s.gl_account_id, s.cost_center_id, s.vendor_name, s.status, s.notes, s.purpose,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -193,7 +196,7 @@ INSERT INTO procurement.purchase_order_charges
 SELECT s.charge_id, s.company_id, toString(s.po_id), toUInt16(s.line_no),
        s.charge_type, s.description, toDecimal64(s.amount, 2), s.gl_account_code,
        toUInt8(s.is_taxable),
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -208,7 +211,7 @@ INSERT INTO procurement.item_requests
 SELECT toString(s.request_id), s.company_id, s.requested_by_user_id, s.requested_by_name,
        s.name_en, s.name_cn, s.category_name, s.spec, s.uom, s.notes,
        s.source_excel_name, s.status, s.approved_item_id, s.admin_notes,
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -220,7 +223,7 @@ INSERT INTO procurement.pr_templates
     (template_id, company_id, template_name, display_name, sort_order, version,
      is_deleted, created_at, updated_at)
 SELECT s.template_id, s.company_id, s.template_name, s.display_name, toUInt8(s.sort_order),
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')
@@ -233,7 +236,7 @@ INSERT INTO procurement.pr_template_items
      department, uom, default_qty, sort_order, version, is_deleted, created_at, updated_at)
 SELECT s.template_item_id, s.company_id, s.template_id, s.item_id, s.name_en, s.name_cn,
        s.spec, s.department, s.uom, toFloat64(s.default_qty), toUInt16(s.sort_order),
-       toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))),
+       greatest(toUInt64(toUnixTimestamp64Milli(toDateTime64(toString(s.updated_at), 6, 'UTC'))), toUInt64(@VERSION_FLOOR@)),
        toUInt8(s.is_deleted),
        toDateTime64(toString(s.created_at), 6, 'UTC'),
        toDateTime64(toString(s.updated_at), 6, 'UTC')

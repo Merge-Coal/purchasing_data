@@ -778,8 +778,13 @@ Then the warehouse. ReplacingMergeTree tables take the corrected rows from a
 full sync (their version is `updated_at`, which just went up by 7 hours):
 
 ```bash
-scripts/ch_sync.sh --full; echo "exit=$?"
+scripts/ch_sync.sh --bump; echo "exit=$?"
 ```
+Use `--bump`, not `--full`: the old app set each row's `version` to the exact time
+of the write, and the corrected `updated_at` lands on the same millisecond or just
+below it, so ClickHouse would keep its old copy. `--bump` re-sends every row with a
+version of at least "now", which beats every existing copy.
+
 `approval_actions` in ClickHouse is append-only (its sort key contains `action_at`)
 and keeps the old values, so reload that one table from Postgres. Nothing is lost:
 Postgres holds all 316 rows, and the table is saved first.
