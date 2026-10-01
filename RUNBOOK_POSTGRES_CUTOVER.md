@@ -752,6 +752,47 @@ needed.
 
 ---
 
+## Timestamp correction (after the cutover)
+
+The old app wrote UTC clock times into `Asia/Jakarta` columns, so every row it
+wrote is 7 hours early. `scripts/fix_timestamps.sql` shifts those rows by +7h
+(see the header of the file for exactly which tables and rows). Rows loaded by
+the Python import scripts are already right and are left alone.
+
+```bash
+cd /opt/purchasing_data && git pull origin main
+docker exec -i mmi-postgres psql -U postgres -X -d procurement < scripts/fix_timestamps.sql
+```
+That is a **preview**: it ends with `ROLLBACK`. Read the "What this changes"
+table, check the sanity block (`date_mismatch` must be 0) and the hours of day
+after the shift (office rows should now sit around 08–18). Then take a backup and apply:
+
+```bash
+scripts/pg_backup.sh; echo "exit=$?"
+docker exec -i mmi-postgres psql -U postgres -X -d procurement -v apply=1 < scripts/fix_timestamps.sql
+```
+It refuses to run a second time (`public.timestamp_fix_log`). To undo, restore the
+backup taken just before.
+
+Then the warehouse. ReplacingMergeTree tables take the corrected rows from a
+full sync (their version is `updated_at`, which just went up by 7 hours):
+
+```bash
+scripts/ch_sync.sh --full; echo "exit=$?"
+```
+`approval_actions` in ClickHouse is append-only (its sort key contains `action_at`)
+and keeps the old values, so reload that one table from Postgres. Nothing is lost:
+Postgres holds all 316 rows, and the table is saved first.
+
+```bash
+chq --query "SELECT * FROM procurement.approval_actions FORMAT Native" > /opt/backups/procurement/ch_approval_actions_before_tsfix.native
+chq --query "TRUNCATE TABLE procurement.approval_actions"
+scripts/ch_sync.sh; echo "exit=$?"
+scripts/ch_sync.sh --verify; echo "exit=$?"
+```
+
+---
+
 ## Reference
 
 | What | Where |
