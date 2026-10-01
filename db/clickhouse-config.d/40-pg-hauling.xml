@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  Postgres source for the hauling mirror (scripts/hauling_sync.sh,
+  db/hauling_sync.sql). hauling_tracker is ANOTHER TEAM'S live system on the
+  shared mmi-postgres server. ClickHouse copies a handful of its tables into
+  its own database `hauling` every 15 minutes with
+      SELECT … FROM postgresql(pg_hauling, table = 'trips')
+  and never writes to it.
+
+  The password is read from the container environment at server start
+  (`from_env`), and docker compose sets HAULING_RO_PASSWORD from
+  /opt/purchasing_data/.env, so no secret is in this repo, in cron, or in any
+  query text. hauling_ro is SELECT-only on an explicit list of tables and
+  cannot read `sessions` or users.password_hash (db/hauling_ro_setup.sql).
+
+  Host `mmi-postgres` resolves because the clickhouse service already joins
+  the external network named by MMI_PG_NETWORK in docker-compose.yml. A second
+  named collection needs no new grant: 30-pg-source-users.xml gives
+  procurement_user `named_collection_control`, which covers every named
+  collection (RUNBOOK_HAULING_MIRROR.md step 4.1 proves it on the server).
+
+  If HAULING_RO_PASSWORD is empty or unset, ClickHouse still starts; the
+  collection then holds an empty password, Postgres rejects the login, and
+  only the hauling sync fails. Nothing else is affected.
+
+  Mounted read-only at /etc/clickhouse-server/config.d/. Changing it needs a
+  ClickHouse restart (`docker compose up -d clickhouse`).
+  Docs: https://clickhouse.com/docs/en/operations/named-collections
+        https://clickhouse.com/docs/en/operations/configuration-files (from_env)
+-->
+<clickhouse>
+    <named_collections>
+        <pg_hauling>
+            <host>mmi-postgres</host>
+            <port>5432</port>
+            <database>hauling_tracker</database>
+            <schema>public</schema>
+            <user>hauling_ro</user>
+            <password from_env="HAULING_RO_PASSWORD"/>
+        </pg_hauling>
+    </named_collections>
+</clickhouse>

@@ -100,6 +100,27 @@ npm start
 Production runs in Docker (`docker compose up -d --build app`) against `mmi-postgres`; see
 `RUNBOOK_POSTGRES_CUTOVER.md`. ClickHouse is not needed to run the app.
 
+## Hauling mirror (`hauling_tracker` -> ClickHouse database `hauling`)
+
+A separate, read-only analytics copy of another team's live `hauling_tracker` Postgres database
+(same `mmi-postgres` server). It is independent of the procurement app and of `scripts/ch_sync.sh`:
+own role, own named collection, own script, own ClickHouse database, own cron and log. The
+`procurement` database and its sync are never touched by it. The mirror is rebuildable from
+Postgres, so it needs no backup and `DROP DATABASE hauling` is its rollback.
+
+- Never write to, alter or restart anything of `hauling_tracker` or `mmi-postgres`. The only change
+  on the Postgres side is the SELECT-only role `hauling_ro` (`db/hauling_ro_setup.sql`).
+- Fixed names: Postgres role `hauling_ro` (password env `HAULING_RO_PASSWORD`, optional in
+  `docker-compose.yml`), ClickHouse named collection `pg_hauling` (`db/clickhouse-config.d/40-pg-hauling.xml`),
+  database `hauling`, state table `hauling._sync_state`, log `/var/log/hauling-ch-sync.log`,
+  cron `/etc/cron.d/hauling-ch-sync` (:07/:22/:37/:52).
+- Files: `scripts/hauling_sync.sh`, `db/hauling_sync.sql`, `db/hauling_ch_schema.sql`,
+  `db/hauling_ro_setup.sql`, `HAULING_MIRROR_CONTRACT.md`, `RUNBOOK_HAULING_MIRROR.md`
+  (production install, verify, rollback, adding tables), tests in `test/hauling/`.
+- Run: `scripts/hauling_sync.sh` (incremental), `--full`, `--init`, `--verify`, `--print`.
+- Phase 1 tables: trips, barge_loadings, scale_readings_pending, station_heartbeat, error_log.
+  `sessions` and `schema_migrations` are never mirrored; `users` only without the password hash.
+
 ## Known Limitations (v1)
 
 - No password reset UI — must edit DB directly

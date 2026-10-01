@@ -56,6 +56,12 @@ services:
       # Read by db/clickhouse-config.d/30-pg-source.xml (from_env) for the
       # warehouse sync's pg_procurement named collection. SELECT-only role.
       - PG_RO_PASSWORD=${PG_RO_PASSWORD:?set PG_RO_PASSWORD in .env (RUNBOOK_POSTGRES_CUTOVER.md)}
+      # Read by db/clickhouse-config.d/40-pg-hauling.xml (from_env) for the
+      # hauling mirror's pg_hauling named collection (SELECT-only hauling_ro
+      # on hauling_tracker). Empty default, deliberately not `:?`: deploys of
+      # the app (`docker compose up -d --build app`) must keep working on a
+      # server where this is not set yet. Unset means only the mirror sync fails.
+      - HAULING_RO_PASSWORD=${HAULING_RO_PASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./db/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
@@ -66,6 +72,10 @@ services:
       # that lets procurement_user use it. See scripts/ch_sync.sh.
       - ./db/clickhouse-config.d/30-pg-source.xml:/etc/clickhouse-server/config.d/30-pg-source.xml:ro
       - ./db/clickhouse-config.d/30-pg-source-users.xml:/etc/clickhouse-server/users.d/30-pg-source.xml:ro
+      # Hauling mirror (scripts/hauling_sync.sh): source connection to
+      # hauling_tracker. Needs no extra grant — the 30- users file above
+      # already lets procurement_user use every named collection.
+      - ./db/clickhouse-config.d/40-pg-hauling.xml:/etc/clickhouse-server/config.d/40-pg-hauling.xml:ro
     ports:
       # Loopback only. `procurement_app` reaches ClickHouse over
       # procurement_net as host `procurement_clickhouse`, so nothing here needs a public

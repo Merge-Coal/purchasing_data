@@ -40,6 +40,28 @@ tail -20 /var/log/procurement-ch-sync.log
 Query current state with `FINAL` as before. The sections below describe the
 pre-cutover setup, when ClickHouse was the app's live database.
 
+Hauling mirror (a second, separate feed): the ClickHouse database `hauling` is a read-only copy
+of five tables of `hauling_tracker`, pulled through the named collection `pg_hauling`
+(`db/clickhouse-config.d/40-pg-hauling.xml`; role `hauling_ro`, password from the container env
+`HAULING_RO_PASSWORD`). It is independent of the procurement sync above: its own script, state
+table (`hauling._sync_state`), log and cron, so either can fail or be removed without the other.
+`procurement_user` already has `named_collection_control`, which covers every named collection, so
+no extra grant file is needed. Unlike `procurement`, `hauling` is only a rebuildable mirror:
+`DROP DATABASE hauling` is safe and is its rollback. Setup, verification and rollback:
+`RUNBOOK_HAULING_MIRROR.md`.
+
+```bash
+scripts/hauling_sync.sh --init      # create database hauling and its tables (idempotent)
+scripts/hauling_sync.sh --full      # rebuild everything from Postgres (first run, repair)
+scripts/hauling_sync.sh             # incremental (what cron runs, every 15 min at :07/:22/:37/:52)
+scripts/hauling_sync.sh --verify    # row counts, sums and max timestamps, Postgres vs ClickHouse
+tail -20 /var/log/hauling-ch-sync.log
+```
+
+`hauling.trips`, `barge_loadings` and `scale_readings_pending` are replaced wholesale every run (no
+`FINAL`); `error_log` and `station_heartbeat` are ReplacingMergeTree and need `FINAL`.
+
+
 ## Connection Details
 
 | Property | Value |
