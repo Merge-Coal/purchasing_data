@@ -206,3 +206,30 @@ Defined in `db/clickhouse_schema.sql`.
 - [ ] Budget and cost center UI
 - [ ] Reporting dashboards (spend by vendor/category, PR aging, open POs, budget vs actual)
 - [ ] Automated daily backup cron on server
+
+## Minimart mirror (a third, separate feed)
+
+The ClickHouse database `minimart` is a read-only copy of the Postgres database `minimart` (the owner's
+minimart app, on the same `mmi-postgres`), pulled through the named collection `pg_minimart`
+(`db/clickhouse-config.d/50-pg-minimart.xml`; role `minimart_ro`, password from the container env
+`MINIMART_RO_PASSWORD`). It is independent of the procurement and hauling feeds: its own script, state table
+(`minimart._sync_state`), log and cron. Unlike them, the schema of its source is not known in advance:
+`scripts/minimart_sync.sh --init` reads the Postgres catalog, generates one mirror table per Postgres table
+and stores the plan (strategy per table, DDL, sync SQL) in `minimart._plan`; `scripts/minimart_sync.sh --print`
+shows it. Columns with sensitive names (password, hash, token, secret, api_key, otp, pin, card) are never read:
+`db/minimart_ro_grants.sql` withholds them at the Postgres level and the generator excludes them anyway.
+`DROP DATABASE minimart` is safe and is its rollback (it is a rebuildable copy, unlike `procurement`).
+Setup, verification, schema drift and rollback: `RUNBOOK_MINIMART_MIRROR.md`.
+
+```bash
+scripts/minimart_sync.sh --init      # introspect Postgres, create the mirror tables, store the plan (idempotent)
+scripts/minimart_sync.sh --print     # review what --init generates: strategy and reason per table, excluded columns, SQL
+scripts/minimart_sync.sh --full      # rebuild everything from Postgres (first load, repair, nightly)
+scripts/minimart_sync.sh             # incremental (what cron runs, every 15 min at :03/:18/:33/:48)
+scripts/minimart_sync.sh --verify    # row counts, sums, max timestamps, content hash, drift; exit 1 on any difference
+tail -20 /var/log/minimart-ch-sync.log
+```
+
+Dashboard authors: tables with strategy `snapshot` hold exactly one copy of each row; `incremental_updated` tables
+are ReplacingMergeTree, query them with `FINAL`; `incremental_created` tables hold each row once. List them with
+`SELECT table_name, strategy FROM minimart._plan WHERE plan_id = (SELECT argMax(plan_id, planned_at) FROM minimart._plan_current)`.

@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+  Postgres source for the minimart mirror (scripts/minimart_sync.sh,
+  scripts/minimart_gen_schema.sh, db/minimart_sync.sql). ClickHouse reads the
+  database `minimart` on the shared mmi-postgres server (catalog and tables)
+  through
+      postgresql(pg_minimart, schema = '...', table = '...')
+  and through ENGINE = PostgreSQL(pg_minimart, table = '...') tables, and never
+  writes to it. It copies it into its own database `minimart` every 15 minutes.
+
+  The password is read from the container environment at server start
+  (`from_env`), and docker compose sets MINIMART_RO_PASSWORD from
+  /opt/purchasing_data/.env, so no secret is in this repo, in cron, or in any
+  query text. minimart_ro is SELECT-only, with column-level grants on tables
+  that hold secrets (db/minimart_ro_grants.sql), and its sessions are pinned to
+  timezone=UTC, datestyle='ISO, YMD' (db/minimart_setup.sql).
+
+  Host `mmi-postgres` resolves because the clickhouse service already joins the
+  external network named by MMI_PG_NETWORK in docker-compose.yml. A further
+  named collection needs no new grant: 30-pg-source-users.xml gives
+  procurement_user `named_collection_control`, which covers every named
+  collection.
+
+  If MINIMART_RO_PASSWORD is empty or unset, ClickHouse still starts; the
+  collection then holds an empty password, Postgres rejects the login, and
+  only the minimart sync fails. Nothing else is affected.
+
+  Mounted read-only at /etc/clickhouse-server/config.d/. Changing it needs a
+  ClickHouse restart (`docker compose up -d clickhouse`).
+  Docs: https://clickhouse.com/docs/en/operations/named-collections
+        https://clickhouse.com/docs/en/operations/configuration-files (from_env)
+-->
+<clickhouse>
+    <named_collections>
+        <pg_minimart>
+            <host>mmi-postgres</host>
+            <port>5432</port>
+            <database>minimart</database>
+            <schema>public</schema>
+            <user>minimart_ro</user>
+            <password from_env="MINIMART_RO_PASSWORD"/>
+        </pg_minimart>
+    </named_collections>
+</clickhouse>

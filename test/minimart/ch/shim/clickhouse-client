@@ -1,0 +1,16 @@
+#!/bin/sh
+# Stand-in for clickhouse-client inside the container: checks it was given the login from the
+# container env (--user/--password), then talks to the scratch server (whose default user has
+# no password). MM_CH_BIN selects the binary (the 24.8 production build or the local 26.9).
+seen_user=0; seen_pw=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user) [ "$2" = procurement_user ] && seen_user=1; shift 2 ;;
+    --password) [ "$2" = not-the-real-one ] && seen_pw=1; shift 2 ;;
+    *) break ;;
+  esac
+done
+[ -n "${MM_SHIM_LOG:-}" ] && echo "login user=$seen_user password=$seen_pw" >> "$MM_SHIM_LOG.login"
+[ "$seen_user$seen_pw" = 11 ] || { echo "clickhouse-client shim: container login not passed" >&2; exit 194; }
+unset CLICKHOUSE_USER CLICKHOUSE_PASSWORD
+exec "${MM_CH_BIN:-clickhouse}" client --port "${MM_CH_PORT:?}" "$@"

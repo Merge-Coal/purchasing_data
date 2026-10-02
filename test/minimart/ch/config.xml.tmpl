@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<!--
+  Scratch ClickHouse server for test/minimart/ch/run_sync_test.sh. Rendered by
+  that script (placeholders @...@) into its own temp directory; never used in
+  production. The server time zone is deliberately NOT UTC (production host:
+  Asia/Makassar) so the test proves the timestamptz conversion does not depend
+  on it. The named collection mirrors what db/clickhouse-config.d/50-pg-minimart.xml
+  does in production, pointing at the local Postgres, password from env.
+-->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <log>@DIR@/server.log</log>
+        <errorlog>@DIR@/server.err.log</errorlog>
+        <size>10M</size>
+        <count>2</count>
+    </logger>
+    <timezone>@TZ@</timezone>
+    <listen_host>127.0.0.1</listen_host>
+    <tcp_port>@TCP@</tcp_port>
+    <http_port>@HTTP@</http_port>
+    <path>@DIR@/data/</path>
+    <tmp_path>@DIR@/tmp/</tmp_path>
+    <user_files_path>@DIR@/user_files/</user_files_path>
+    <format_schema_path>@DIR@/format_schemas/</format_schema_path>
+    <mark_cache_size>134217728</mark_cache_size>
+    <max_server_memory_usage_to_ram_ratio>0.5</max_server_memory_usage_to_ram_ratio>
+    <user_directories>
+        <users_xml><path>@DIR@/users.xml</path></users_xml>
+    </user_directories>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <flush_interval_milliseconds>500</flush_interval_milliseconds>
+    </query_log>
+    <named_collections>
+        <pg_minimart>
+            <host>127.0.0.1</host>
+            <port>@PGPORT@</port>
+            <database>@PGDB@</database>
+            <schema>public</schema>
+            <user>@PGUSER@</user>
+            <password from_env="MINIMART_RO_PASSWORD"/>
+        </pg_minimart>
+    </named_collections>
+</clickhouse>

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Thin stand-in for `docker` in test/minimart/ch/run_sync_test.sh: it understands exactly
+#   docker exec [-i] <container> sh -c '<script>' <name> <args...>
+# which is the only form scripts/minimart_sync.sh uses. It checks the container name, then runs
+# the script with the "container environment" (CLICKHOUSE_USER / CLICKHOUSE_PASSWORD, fake
+# values) and a PATH whose clickhouse-client is shim/clickhouse-client (talks to the scratch
+# server). Without -i stdin is detached, as with the real docker exec.
+[ "${1:-}" = exec ] || { echo "docker shim: only 'exec' is supported" >&2; exit 125; }
+shift
+STDIN=0; if [ "${1:-}" = -i ]; then STDIN=1; shift; fi
+CONT="${1:-}"; shift
+if [ "$CONT" != "${MM_SHIM_CONTAINER:-procurement_clickhouse}" ]; then
+  echo "Error response from daemon: No such container: $CONT" >&2; exit 1
+fi
+[ -n "${MM_SHIM_LOG:-}" ] && printf 'docker exec%s %s\n' "$([ $STDIN = 1 ] && echo ' -i')" "$CONT" >> "$MM_SHIM_LOG"
+DIR=$(cd "$(dirname "$0")" && pwd)
+export PATH="$DIR:$PATH" CLICKHOUSE_USER=procurement_user CLICKHOUSE_PASSWORD=not-the-real-one
+if [ $STDIN = 1 ]; then exec "$@"; else exec "$@" < /dev/null; fi

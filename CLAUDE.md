@@ -121,6 +121,31 @@ Postgres, so it needs no backup and `DROP DATABASE hauling` is its rollback.
 - Phase 1 tables: trips, barge_loadings, scale_readings_pending, station_heartbeat, error_log.
   `sessions` and `schema_migrations` are never mirrored; `users` only without the password hash.
 
+## Minimart mirror (Postgres database `minimart` -> ClickHouse database `minimart`)
+
+A second, independent read-only analytics copy, this time of the owner's own minimart app, whose
+database was moved onto the shared `mmi-postgres` server (`RUNBOOK_MINIMART_MIGRATION.md`). Its schema is
+NOT known in advance, so nothing about it is hard-coded: `--init` introspects the Postgres catalog through
+the SELECT-only role `minimart_ro`, generates the ClickHouse tables and the sync SQL, picks a strategy per
+table by a documented rule (snapshot swap / incremental ReplacingMergeTree by `updated_at` / append-only by
+`created_at`), excludes columns with sensitive names (password, hash, token, secret, api_key, otp, pin, card)
+and stores the generated plan in ClickHouse (`minimart._plan*`), not in git. Own role, own named collection,
+own script, own database, own cron and log; procurement and hauling are never touched.
+
+- Fixed names: Postgres role `minimart_ro` (password env `MINIMART_RO_PASSWORD`, optional in
+  `docker-compose.yml`), ClickHouse named collection `pg_minimart`
+  (`db/clickhouse-config.d/50-pg-minimart.xml`), database `minimart`, state table `minimart._sync_state`, log
+  `/var/log/minimart-ch-sync.log`, cron `/etc/cron.d/minimart-ch-sync` (:03/:18/:33/:48 + nightly 04:42 full+verify).
+- Files: `scripts/minimart_sync.sh` (modes none/`--full`/`--init`/`--verify`/`--print [table]`),
+  `scripts/minimart_gen_schema.sh` (the generator: strategy rule, type mapping and sensitive-column rule are
+  documented in its header), `db/minimart_sync.sql` (SQL templates), `db/minimart_ch_schema.sql` (static state
+  tables), `db/minimart_ro_grants.sql` (column-level grants, run as superuser; re-run after schema drift),
+  optional `minimart_sync_overrides.conf` (exclude / force a strategy / exclude or allow a column),
+  `RUNBOOK_MINIMART_MIRROR.md`, tests in `test/minimart/ch/` (stand-in schema: `test/minimart/stand_in_schema.sql`).
+- Schema drift (new/dropped/changed column or table in Postgres) is logged as `DRIFT [...]` lines and listed by
+  `--verify`; a table whose columns were dropped or changed is skipped until `--init` is re-run, all other tables
+  keep syncing. `minimart_ro` has CONNECTION LIMIT 20: the source connection is opened per table and closed again.
+
 ## Known Limitations (v1)
 
 - No password reset UI — must edit DB directly

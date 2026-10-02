@@ -62,6 +62,10 @@ services:
       # the app (`docker compose up -d --build app`) must keep working on a
       # server where this is not set yet. Unset means only the mirror sync fails.
       - HAULING_RO_PASSWORD=${HAULING_RO_PASSWORD:-}
+      # Read by db/clickhouse-config.d/50-pg-minimart.xml (from_env) for the
+      # minimart mirror's pg_minimart named collection (SELECT-only minimart_ro
+      # on the minimart database). Same empty-default reasoning as above.
+      - MINIMART_RO_PASSWORD=${MINIMART_RO_PASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./db/clickhouse_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
@@ -76,6 +80,9 @@ services:
       # hauling_tracker. Needs no extra grant — the 30- users file above
       # already lets procurement_user use every named collection.
       - ./db/clickhouse-config.d/40-pg-hauling.xml:/etc/clickhouse-server/config.d/40-pg-hauling.xml:ro
+      # Minimart mirror (scripts/minimart_sync.sh): source connection to the
+      # minimart database. Same: no extra grant needed.
+      - ./db/clickhouse-config.d/50-pg-minimart.xml:/etc/clickhouse-server/config.d/50-pg-minimart.xml:ro
     ports:
       # Loopback only. `procurement_app` reaches ClickHouse over
       # procurement_net as host `procurement_clickhouse`, so nothing here needs a public
